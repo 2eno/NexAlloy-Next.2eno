@@ -8,7 +8,8 @@ loaded, the bundle format and the rules for bundles are described in its
 📦 NexAlloy-Next.2eno
  ├ build-logic/    The nexalloy.bundle Gradle plugin (copy of NexAlloy-Next's)
  ├ bundles/
- │  ├ nexalloy/    NexAlloy Patches: Morphe, ReVanced, Piko and hoodles patches
+ │  ├ nexalloy/    NexAlloy Patches: Morphe, ReVanced and hoodles patches
+ │  ├ piko/        Piko Patches: Instagram patches ported from Piko
  │  ├ 2eno/        2eno Patches: extension code from the 2eno-patches submodule
  │  └ testing/     Fingerprint test harness shared by the bundles
  └ stub/           Stubs of YouTube classes used by the Morphe extensions

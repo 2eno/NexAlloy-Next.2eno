@@ -3,5 +3,5 @@
     <string name="application_name">YouTube</string>
     <string name="morphe_settings">Morphe</string>
     <string name="app_launcher_name">PLACEHOLDER</string>
-    <string name="bundle_description">YouTube, YouTube Music, Reddit, Instagram, Threads, Google Photos, Photomath, Strava and AllTrails patches from Morphe, ReVanced, Piko and hoodles, ported to Xposed hooks.</string>
+    <string name="bundle_description">YouTube, YouTube Music, Reddit, Threads, Google Photos, Photomath, Strava and AllTrails patches from Morphe, ReVanced and hoodles, ported to Xposed hooks.</string>
 </resources>

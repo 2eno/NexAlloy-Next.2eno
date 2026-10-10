@@ -1,7 +1,7 @@
 package io.github.nexalloy.piko.instagram.layout
 
 import android.view.View
-import app.morphe.extension.shared.Logger
+import io.github.nexalloy.PatcherLog
 import de.robv.android.xposed.XC_MethodReplacement.DO_NOTHING
 import de.robv.android.xposed.XC_MethodReplacement.returnConstant
 import de.robv.android.xposed.XposedHelpers
@@ -115,7 +115,7 @@ val DisableDoubleTapLike = patch(
         runCatching {
             // Report the double tap as handled.
             methods().ifEmpty { throw Exception("No methods") }.forEach { it.hookMethod(returnConstant(true)) }
-        }.onFailure { Logger.printInfo({ "Double tap on $target not found" }, it as? Exception) }.isSuccess
+        }.onFailure { PatcherLog.info(it) { "Double tap on $target not found" } }.isSuccess
     }
     if (hooked == 0) throw Exception("No double tap listeners found")
 }

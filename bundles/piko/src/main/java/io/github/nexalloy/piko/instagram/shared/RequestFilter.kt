@@ -1,6 +1,6 @@
 package io.github.nexalloy.piko.instagram.shared
 
-import app.morphe.extension.shared.Logger
+import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.patch
 import io.github.nexalloy.piko.instagram.tigonStartRequestMethods
 import java.io.IOException
@@ -113,7 +113,7 @@ val InterceptRequests = patch(name = "<Intercept requests>") {
             before { param ->
                 val uri = RequestFilter.findUri(param.args) ?: return@before
                 if (RequestFilter.shouldBlock(uri)) {
-                    Logger.printDebug { "Blocked request: $uri" }
+                    PatcherLog.info { "Blocked request: $uri" }
                     // The callers handle failed requests.
                     param.throwable = IOException("Block uri")
                 }

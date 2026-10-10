@@ -14,7 +14,7 @@ To add it manually, add the patch source `2eno/NexAlloy-Next.2eno`. NexAlloy ins
 
 ### NexAlloy Patches (`nexalloy-*.nxb`)
 
-Ported from Morphe, ReVanced, Piko and hoodles.
+Ported from Morphe, ReVanced and hoodles.
 
 | App | Patches |
 | --- | --- |
@@ -23,12 +23,19 @@ Ported from Morphe, ReVanced, Piko and hoodles.
 | Reddit | Hide ads, sanitize sharing links, start as guest |
 | Google Photos | Spoof Pixel XL |
 | Photomath | Unlock plus |
-| Instagram | Ported from [Piko](https://github.com/crimera/piko): hide ads and suggested content, anonymous viewing, disable analytics, layout and link options, and more |
 | Threads | Hide ads |
 | Strava | Unlock subscription features, disable subscription suggestions |
 | AllTrails | Enable Peak membership |
 
-<sub>The Instagram patches are ported from [Piko](https://github.com/crimera/piko), see its [NOTICE](bundles/nexalloy/src/main/java/io/github/nexalloy/piko/NOTICE).</sub>
+### Piko Patches (`piko-*.nxb`)
+
+Ported from [Piko](https://github.com/crimera/piko).
+
+| App | Patches |
+| --- | --- |
+| Instagram | Hide ads and suggested content, anonymous viewing, disable analytics, layout and link options, and more |
+
+<sub>The Instagram patches are ported from [Piko](https://github.com/crimera/piko), see its [NOTICE](bundles/piko/src/main/java/io/github/nexalloy/piko/NOTICE).</sub>
 
 ### 2eno Patches (`2eno-*.nxb`)
 

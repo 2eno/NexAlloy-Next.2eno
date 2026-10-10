@@ -7,7 +7,6 @@ import io.github.nexalloy.hoodles.morphe.alltrails.AllTrailsPatches
 import io.github.nexalloy.morphe.music.YTMusicPatches
 import io.github.nexalloy.morphe.reddit.RedditPatches
 import io.github.nexalloy.morphe.youtube.YouTubePatches
-import io.github.nexalloy.piko.instagram.InstagramPatches
 import io.github.nexalloy.revanced.googlephotos.GooglePhotosPatches
 import io.github.nexalloy.revanced.meta.MetaPatches
 import io.github.nexalloy.revanced.photomath.PhotomathPatches
@@ -24,7 +23,6 @@ object NexAlloyPatches : PatchBundle {
         app("Reddit", "com.reddit.frontpage", RedditPatches),
         app("Google Photos", "com.google.android.apps.photos", GooglePhotosPatches),
         app("Photomath", "com.microblink.photomath", PhotomathPatches),
-        app("Instagram", "com.instagram.android", InstagramPatches),
         app("Threads", "com.instagram.barcelona", MetaPatches),
         app("Strava", "com.strava", StravaPatches),
         app("AllTrails", "com.alltrails.alltrails", AllTrailsPatches),

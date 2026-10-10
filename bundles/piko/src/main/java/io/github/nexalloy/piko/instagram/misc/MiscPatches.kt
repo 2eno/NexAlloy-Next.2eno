@@ -1,7 +1,7 @@
 package io.github.nexalloy.piko.instagram.misc
 
 import android.app.Activity
-import app.morphe.extension.shared.Logger
+import io.github.nexalloy.PatcherLog
 import de.robv.android.xposed.XC_MethodReplacement.returnConstant
 import de.robv.android.xposed.XposedBridge
 import io.github.nexalloy.patch
@@ -138,7 +138,7 @@ val UnlockDeveloperOptions = patch(
                 openMethod.invoke(instanceField.get(null), activity, activity, userSession)
                 param.result = true
             } catch (e: Exception) {
-                Logger.printException({ "Could not open the developer options" }, e)
+                PatcherLog.error(e) { "Could not open the developer options" }
             }
         }
     }
