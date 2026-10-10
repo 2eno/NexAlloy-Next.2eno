@@ -1,6 +1,6 @@
 [versions]
 # NexAlloy patcher API the bundles compile against.
-patcher = "1.0.0"
+patcher = "1.1.0"
 agp = "9.2.1"
 dexkit = "2.3.0"
 xposed = "82"

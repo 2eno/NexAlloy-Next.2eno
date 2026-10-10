@@ -19,7 +19,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven(url = "https://api.xposed.info")
-        // The NexAlloy patcher API, published by https://github.com/2eno/NexAlloy-Next.
+        // The NexAlloy patcher API, published by https://github.com/2eno/NexAlloyNext.
         maven(url = providers.gradleProperty("nexalloyMaven").get())
     }
 }
@@ -33,7 +33,7 @@ android {
     minSdk = 27
 }
 
-rootProject.name = "NexAlloy-Next.2eno"
+rootProject.name = "NexAlloyNext.2eno-Patches"
 
 include(":stub")
 include(":bundles:nexalloy")

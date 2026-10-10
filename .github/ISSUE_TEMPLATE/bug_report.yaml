@@ -7,8 +7,8 @@ body:
       value: |
         Before creating a new bug report, please keep the following in mind:
 
-        - **Do not submit a duplicate bug report**: Search for existing bug reports [here](https://github.com/2eno/NexAlloy-Next.2eno/issues?q=%5BBug%5D).
-        - **Check the troubleshooting guide**: A solution to your issue might be found in the [FAQ](https://github.com/2eno/NexAlloy-Next#readme).
+        - **Do not submit a duplicate bug report**: Search for existing bug reports [here](https://github.com/2eno/NexAlloyNext.2eno-Patches/issues?q=%5BBug%5D).
+        - **Check the troubleshooting guide**: A solution to your issue might be found in the [FAQ](https://github.com/2eno/NexAlloyNext#readme).
   - type: checkboxes
     attributes:
       label: Acknowledgements

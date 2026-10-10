@@ -1,20 +1,20 @@
-# NexAlloy Next Patches
+# NexAlloyNext Patches
 
-Patch bundles for [NexAlloy Next](https://github.com/2eno/NexAlloy-Next), the LSPosed module that applies patch bundles from patch sources.
+Patch bundles for [NexAlloyNext](https://github.com/2eno/NexAlloyNext), the LSPosed module that applies patch bundles from patch sources.
 
 >[!IMPORTANT]
 > This is **NOT an official Morphe or ReVanced project**, do not ask their developers for help.
 
 ## Usage
 
-NexAlloy Next has this repository preset as a patch source: open NexAlloy > **Patch sources**, tap *NexAlloy Patches* and choose **Install**.
-To add it manually, add the patch source `2eno/NexAlloy-Next.2eno`. NexAlloy installs every `.nxb` bundle of the latest release.
+NexAlloyNext has this repository preset as a patch source: open NexAlloy > **Patch sources**, tap *NexAlloy Patches* and choose **Install**.
+To add it manually, add the patch source `2eno/NexAlloyNext.2eno-Patches`. NexAlloy installs every `.nxb` bundle of the latest release.
 
 ## Patch bundles
 
 ### NexAlloy Patches (`nexalloy-*.nxb`)
 
-Ported from Morphe, ReVanced and hoodles.
+Ported from Morphe, ReVanced and hoodles. NexAlloyNext recommends the YouTube, YouTube Music and Reddit versions the Morphe patches are tested with.
 
 | App | Patches |
 | --- | --- |

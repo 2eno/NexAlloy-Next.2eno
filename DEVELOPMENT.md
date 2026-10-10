@@ -1,12 +1,12 @@
 # Development Guide
 
-This repository holds the patch bundles of [NexAlloy Next](https://github.com/2eno/NexAlloy-Next). How bundles are
+This repository holds the patch bundles of [NexAlloyNext](https://github.com/2eno/NexAlloyNext). How bundles are
 loaded, the bundle format and the rules for bundles are described in its
-[development guide](https://github.com/2eno/NexAlloy-Next/blob/main/DEVELOPMENT.md).
+[development guide](https://github.com/2eno/NexAlloyNext/blob/main/DEVELOPMENT.md).
 
 ```text
-📦 NexAlloy-Next.2eno
- ├ build-logic/    The nexalloy.bundle Gradle plugin (copy of NexAlloy-Next's)
+📦 NexAlloyNext.2eno-Patches
+ ├ build-logic/    The nexalloy.bundle Gradle plugin (copy of NexAlloyNext's)
  ├ bundles/
  │  ├ nexalloy/    NexAlloy Patches: Morphe, ReVanced and hoodles patches
  │  ├ piko/        Piko Patches: Instagram patches ported from Piko
@@ -16,9 +16,9 @@ loaded, the bundle format and the rules for bundles are described in its
 ```
 
 The bundles compile against the patcher API `io.github.nexalloy:patcher` (version `patcher` in
-[libs.versions.toml](gradle/libs.versions.toml)), published to `https://raw.githubusercontent.com/2eno/NexAlloy-Next/maven`.
-To build against a local NexAlloy-Next checkout, run `./gradlew :patcher:publishAllPublicationsToReleaseRepository`
-there and pass `-PnexalloyMaven=file:///path/to/NexAlloy-Next/build/maven` here.
+[libs.versions.toml](gradle/libs.versions.toml)), published to `https://raw.githubusercontent.com/2eno/NexAlloyNext/maven`.
+To build against a local NexAlloyNext checkout, run `./gradlew :patcher:publishAllPublicationsToReleaseRepository`
+there and pass `-PnexalloyMaven=file:///path/to/NexAlloyNext/build/maven` here.
 
 ```sh
 ./gradlew assembleBundle   # bundles/*/build/outputs/bundle/*.nxb

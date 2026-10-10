@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.nexalloy.patches"
-        versionCode = 2
+        versionCode = 3
         val patchVersion = Properties().apply {
             rootProject.file("morphe-patches/gradle.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
         }["version"]
@@ -88,6 +88,52 @@ protobuf {
                 }
             }
         }
+    }
+}
+
+/**
+ * Generates `MorpheTargets` from the app versions the Morphe patches in the submodule are tested with
+ * (the `targets` of their `Compatibility` constants), so the recommended versions follow the submodule.
+ */
+abstract class GenerateMorpheTargetsTask : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val constants: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val fields = constants.files.sortedBy { it.path }.joinToString("\n") { file ->
+            val name = file.parentFile.parentFile.name.uppercase()
+            val targets = Regex("""AppTarget\((.*?)\)""", RegexOption.DOT_MATCHES_ALL).findAll(file.readText())
+                .mapNotNull { match ->
+                    val version = Regex("""version\s*=\s*"([^"]+)"""").find(match.groupValues[1])?.groupValues?.get(1)
+                        ?: return@mapNotNull null
+                    val experimental = "isExperimental = true" in match.groupValues[1]
+                    "new AppTarget(\"$version\", $experimental)"
+                }.toList()
+            "    public static final List<AppTarget> $name = Arrays.asList(${targets.joinToString(", ")});"
+        }
+        val dir = outputDirectory.get().asFile.resolve("io/github/nexalloy/patches").apply { mkdirs() }
+        dir.resolve("MorpheTargets.java").writeText(
+            """
+            |package io.github.nexalloy.patches;
+            |
+            |import io.github.nexalloy.AppTarget;
+            |import java.util.Arrays;
+            |import java.util.List;
+            |
+            |/** App versions the Morphe patches are tested with, newest first. Generated from the morphe-patches submodule. */
+            |public final class MorpheTargets {
+            |$fields
+            |
+            |    private MorpheTargets() {
+            |    }
+            |}
+            |""".trimMargin()
+        )
     }
 }
 
@@ -223,6 +269,14 @@ abstract class CopyResourcesTask @Inject constructor() : DefaultTask() {
 androidComponents {
     onVariants { variant ->
         val variantName = variant.name.uppercaseFirstChar()
+        val targetsTask = project.tasks.register<GenerateMorpheTargetsTask>("generateMorpheTargets$variantName") {
+            constants.from(
+                listOf("youtube", "music", "reddit").map {
+                    project.file("../../morphe-patches/patches/src/main/kotlin/app/morphe/patches/$it/shared/Constants.kt")
+                }
+            )
+        }
+        variant.sources.java?.addGeneratedSourceDirectory(targetsTask, GenerateMorpheTargetsTask::outputDirectory)
         val strTask = project.tasks.register<GenerateStringsTask>("generateStrings$variantName") {
             inputDirectory.set(project.file("../../morphe-patches/patches/src/main/resources/addresources"))
         }
