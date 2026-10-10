@@ -3,7 +3,6 @@ package io.github.nexalloy.piko.instagram
 import io.github.nexalloy.morphe.Opcode
 import io.github.nexalloy.morphe.findClassDirect
 import io.github.nexalloy.morphe.findFieldDirect
-import io.github.nexalloy.morphe.findFieldListDirect
 import io.github.nexalloy.morphe.findMethodDirect
 import io.github.nexalloy.morphe.findMethodListDirect
 import io.github.nexalloy.morphe.opcodeEnum
@@ -87,18 +86,16 @@ val feedItemParseFromJsonMethod = findMethodDirect {
 }
 
 /**
- * The feed item fields holding suggested content.
- * The parser stores the value of a key right after comparing it.
+ * The method the feed item parser reads each JSON key with: its result is switched on by hash code, like in Piko's
+ * patch.
  */
-val suggestedContentFields = findFieldListDirect {
+val feedJsonKeyReaderMethod = findMethodDirect {
     val instructions = feedItemParseFromJsonMethod().instructions
-    suggestedContentKeys.mapNotNull { key ->
-        val keyIndex = instructions.indexOfFirst { it.string == key }
-        if (keyIndex < 0) return@mapNotNull null
-        instructions.drop(keyIndex + 1).take(12)
-            .takeWhile { it.string == null }
-            .firstOrNull { it.opcodeEnum == Opcode.IPUT_OBJECT }?.fieldRef
-    }.distinctBy { it.descriptor }
+    val hashIndex = instructions.indexOfFirst {
+        it.methodRef?.let { method -> method.className == "java.lang.String" && method.name == "hashCode" } == true
+    }
+    val keyIndex = (0 until hashIndex).last { instructions[it].opcodeEnum == Opcode.MOVE_RESULT_OBJECT }
+    instructions[keyIndex - 1].methodRef!!.also { require(it.returnTypeName == "java.lang.String") }
 }
 
 val activeBenefitCheckerMethod = findMethodDirect {

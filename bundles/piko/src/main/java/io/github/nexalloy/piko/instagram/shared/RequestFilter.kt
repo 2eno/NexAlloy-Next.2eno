@@ -3,7 +3,6 @@ package io.github.nexalloy.piko.instagram.shared
 import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.patch
 import io.github.nexalloy.piko.instagram.tigonStartRequestMethods
-import java.io.IOException
 import java.lang.reflect.Field
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -78,26 +77,44 @@ object RequestFilter {
         return ruleFor(uri)?.let { it in enabledRules } ?: false
     }
 
-    private val uriFields = ConcurrentHashMap<Class<*>, Array<Field>>()
-
     /**
-     * The request uri, either passed directly or held by one of the arguments.
+     * Points a blocked request at an unreachable local address, so it fails like any network error.
+     *
+     * Piko throws an IOException inside startRequest, where Instagram's own try/catch handles it. A hook can only
+     * throw from the call, past that catch, which crashes the request thread.
+     *
+     * @return the blocked uri, or null if the request is not blocked.
      */
-    fun findUri(args: Array<Any?>): URI? {
-        args.forEach { arg ->
-            if (arg == null) return@forEach
-            if (arg is URI) return arg
-            val fields = uriFields.getOrPut(arg.javaClass) {
-                generateSequence(arg.javaClass) { it.superclass }
-                    .takeWhile { it != Any::class.java }
-                    .flatMap { it.declaredFields.asSequence() }
-                    .filter { it.type == URI::class.java }
-                    .onEach { it.isAccessible = true }
-                    .toList().toTypedArray()
+    fun blockIfNeeded(args: Array<Any?>): URI? {
+        args.forEachIndexed { index, arg ->
+            if (arg == null) return@forEachIndexed
+            if (arg is URI) {
+                if (!shouldBlock(arg)) return null
+                args[index] = unreachable(arg)
+                return arg
             }
-            fields.forEach { field -> (field.get(arg) as? URI)?.let { return it } }
+            uriFields(arg.javaClass).forEach { field ->
+                val uri = field.get(arg) as? URI ?: return@forEach
+                if (!shouldBlock(uri)) return null
+                field.set(arg, unreachable(uri))
+                return uri
+            }
         }
         return null
+    }
+
+    // The discard port of the device itself refuses the connection right away.
+    private fun unreachable(uri: URI) = URI("https", null, "127.0.0.1", 9, uri.path, null, null)
+
+    private val uriFields = ConcurrentHashMap<Class<*>, Array<Field>>()
+
+    private fun uriFields(clazz: Class<*>) = uriFields.getOrPut(clazz) {
+        generateSequence(clazz) { it.superclass }
+            .takeWhile { it != Any::class.java }
+            .flatMap { it.declaredFields.asSequence() }
+            .filter { it.type == URI::class.java }
+            .onEach { it.isAccessible = true }
+            .toList().toTypedArray()
     }
 }
 
@@ -111,12 +128,8 @@ val InterceptRequests = patch(name = "<Intercept requests>") {
     methods.forEach {
         it.hookMethod {
             before { param ->
-                val uri = RequestFilter.findUri(param.args) ?: return@before
-                if (RequestFilter.shouldBlock(uri)) {
-                    PatcherLog.info { "Blocked request: $uri" }
-                    // The callers handle failed requests.
-                    param.throwable = IOException("Block uri")
-                }
+                val uri = RequestFilter.blockIfNeeded(param.args) ?: return@before
+                PatcherLog.info { "Blocked request: $uri" }
             }
         }
     }

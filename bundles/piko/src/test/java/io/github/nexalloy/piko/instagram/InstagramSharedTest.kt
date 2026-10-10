@@ -32,13 +32,22 @@ class InstagramSharedTest {
     }
 
     @Test
-    fun findUri() {
-        class Request(val uri: URI)
+    fun blockIfNeeded() {
+        class Request(var uri: URI)
 
-        val uri = URI("https://i.instagram.com/api/v1/feed/timeline/")
-        assertEquals(uri, RequestFilter.findUri(arrayOf(null, "x", Request(uri))))
-        assertEquals(uri, RequestFilter.findUri(arrayOf(uri)))
-        assertNull(RequestFilter.findUri(arrayOf("x")))
+        RequestFilter.enable(Rule.ADS)
+        val ads = URI("https://i.instagram.com/api/v1/async_ads/")
+        val request = Request(ads)
+        assertEquals(ads, RequestFilter.blockIfNeeded(arrayOf(null, "x", request)))
+        assertEquals(URI("https://127.0.0.1:9/api/v1/async_ads/"), request.uri)
+
+        val args = arrayOf<Any?>(ads)
+        assertEquals(ads, RequestFilter.blockIfNeeded(args))
+        assertEquals("127.0.0.1", (args[0] as URI).host)
+
+        val timeline = URI("https://i.instagram.com/api/v1/feed/timeline/")
+        assertNull(RequestFilter.blockIfNeeded(arrayOf(Request(timeline))))
+        assertNull(RequestFilter.blockIfNeeded(arrayOf("x")))
     }
 
     @Test
