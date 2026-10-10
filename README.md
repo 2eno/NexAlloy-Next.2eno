@@ -8,7 +8,7 @@ Patch bundles for [NexAlloyNext](https://github.com/2eno/NexAlloyNext), the LSPo
 ## Usage
 
 NexAlloyNext has this repository preset as a patch source: open NexAlloy > **Patch sources**, tap *NexAlloy Patches* and choose **Install**.
-To add it manually, add the patch source `2eno/NexAlloyNext.2eno-Patches`. NexAlloy installs every `.nxb` bundle of the latest release.
+To add it manually, add the patch source `2eno/NexAlloyNext-Patches`. NexAlloy installs every `.nxb` bundle of the latest release.
 
 ## Patch bundles
 

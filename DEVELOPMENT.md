@@ -5,7 +5,7 @@ loaded, the bundle format and the rules for bundles are described in its
 [development guide](https://github.com/2eno/NexAlloyNext/blob/main/DEVELOPMENT.md).
 
 ```text
-📦 NexAlloyNext.2eno-Patches
+📦 NexAlloyNext-Patches
  ├ build-logic/    The nexalloy.bundle Gradle plugin (copy of NexAlloyNext's)
  ├ bundles/
  │  ├ nexalloy/    NexAlloy Patches: Morphe, ReVanced and hoodles patches

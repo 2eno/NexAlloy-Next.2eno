@@ -33,7 +33,7 @@ android {
     minSdk = 27
 }
 
-rootProject.name = "NexAlloyNext.2eno-Patches"
+rootProject.name = "NexAlloyNext-Patches"
 
 include(":stub")
 include(":bundles:nexalloy")
