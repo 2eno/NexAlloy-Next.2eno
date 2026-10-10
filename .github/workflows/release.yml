@@ -10,6 +10,9 @@ on:
       tag:
         description: 'Release tag, X.Y.Z or X.Y.Z-suffix for a pre-release'
         required: true
+      delete:
+        description: 'Also delete the releases and tags whose tag contains this text, e.g. -alpha'
+        required: false
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -39,8 +42,19 @@ jobs:
     - name: Create release
       run: |
         FLAGS=""
-        # Tags like 1.0.0-alpha are pre-releases.
+        # Tags like 1.0.0-beta are pre-releases.
         if [[ "${{ env.TAG }}" == *-* ]]; then FLAGS="--prerelease"; fi
         gh release create ${{ env.TAG }} bundles/*/build/outputs/bundle/*.nxb $FLAGS --target "${{ github.sha }}" --title "${{ env.TAG }}" --generate-notes
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Delete superseded releases
+      if: inputs.delete != ''
+      run: |
+        gh release list --limit 200 --json tagName --jq '.[].tagName' > tags
+        for tag in $(grep -F -- "$PATTERN" tags | grep -vxF -- "$TAG" || true); do
+          gh release delete "$tag" --cleanup-tag --yes
+        done
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PATTERN: ${{ inputs.delete }}
