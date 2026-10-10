@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Picks up new releases of the 2eno patches, whose extension code is compiled into the 2eno bundle.
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    allow:
+      - dependency-name: "2eno-patches"
+    schedule:
+      interval: "daily"

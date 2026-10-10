@@ -1,0 +1,48 @@
+[versions]
+# NexAlloy patcher API the bundles compile against.
+patcher = "1.0.0"
+agp = "9.2.1"
+dexkit = "2.3.0"
+xposed = "82"
+libxposed = "102.0.0"
+annotation = "1.10.0"
+gson = "2.14.0"
+kotlinxCoroutinesAndroid = "1.11.0"
+fuel = "3.0.0-alpha04"
+junit = "6.1.0"
+jadx = "1.5.5"
+slf4j = "2.0.18"
+flatbuffers = "23.5.26"
+
+androidx-javascriptengine = "1.1.0"
+protobuf = "0.10.0"
+protoc = "4.35.1"
+collections4 = "4.6.0"
+lang3 = "3.20.0"
+
+
+[libraries]
+nexalloy-patcher = { group = "io.github.nexalloy", name = "patcher", version.ref = "patcher" }
+dexkit = { group = "org.luckypray", name = "dexkit", version.ref = "dexkit" }
+xposed = { group = "de.robv.android.xposed", name = "api", version.ref = "xposed" }
+libxposed-api = {group = "io.github.libxposed", name = "api", version.ref = "libxposed"}
+libxposed-service = {group = "io.github.libxposed", name = "service", version.ref = "libxposed"}
+annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutinesAndroid" }
+fuel = { group = "com.github.kittinunf.fuel", name = "fuel", version.ref = "fuel" }
+junit-jupiter-params = { group = "org.junit.jupiter", name = "junit-jupiter-params", version.ref = "junit" }
+jadx-core = { group = "io.github.skylot", name = "jadx-core", version.ref = "jadx" }
+slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4j" }
+flatbuffers = { group = "com.google.flatbuffers", name = "flatbuffers-java", version.ref = "flatbuffers" }
+protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protoc" }
+protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protoc" }
+androidx-javascriptengine = { module = "androidx.javascriptengine:javascriptengine", version.ref = "androidx-javascriptengine" }
+collections4 = { module = "org.apache.commons:commons-collections4", version.ref = "collections4" }
+lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "lang3" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+
+protobuf = { id = "com.google.protobuf", version.ref = "protobuf" }

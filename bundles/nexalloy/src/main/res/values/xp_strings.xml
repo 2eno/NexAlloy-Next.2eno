@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">NexAlloy Patches</string>
+    <string name="application_name">YouTube</string>
+    <string name="morphe_settings">Morphe</string>
+    <string name="app_launcher_name">PLACEHOLDER</string>
+    <string name="bundle_description">YouTube, YouTube Music, Reddit, Instagram, Threads, Google Photos, Photomath, Strava and AllTrails patches from Morphe, ReVanced, Piko and hoodles, ported to Xposed hooks.</string>
+</resources>

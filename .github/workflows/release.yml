@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+  # Releases the selected ref under a new tag, e.g. when tags cannot be pushed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, X.Y.Z or X.Y.Z-suffix for a pre-release'
+        required: true
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    - name: set up JDK
+      uses: actions/setup-java@v5
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Build patch bundles
+      run: ./gradlew assembleBundle
+
+    # NexAlloy installs every .nxb asset of the latest release of a patch source.
+    - name: Create release
+      run: |
+        FLAGS=""
+        # Tags like 1.0.0-alpha are pre-releases.
+        if [[ "${{ env.TAG }}" == *-* ]]; then FLAGS="--prerelease"; fi
+        gh release create ${{ env.TAG }} bundles/*/build/outputs/bundle/*.nxb $FLAGS --target "${{ github.sha }}" --title "${{ env.TAG }}" --generate-notes
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

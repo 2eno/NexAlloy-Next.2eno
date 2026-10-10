@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:hasCode="true"
+        android:label="@string/app_name">
+        <!-- Filled in by the nexalloy.bundle plugin. -->
+        <meta-data
+            android:name="nexalloy.bundle.entry"
+            android:value="${nexalloyBundleEntry}" />
+        <meta-data
+            android:name="nexalloy.bundle.apiVersion"
+            android:value="${nexalloyPatcherApiVersion}" />
+        <meta-data
+            android:name="nexalloy.bundle.author"
+            android:value="${nexalloyBundleAuthor}" />
+        <meta-data
+            android:name="nexalloy.bundle.description"
+            android:value="${nexalloyBundleDescription}" />
+    </application>
+</manifest>
