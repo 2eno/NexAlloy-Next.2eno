@@ -8,6 +8,8 @@ import io.github.nexalloy.morphe.findMethodListDirect
 import io.github.nexalloy.morphe.opcodeEnum
 import io.github.nexalloy.morphe.opcodes
 import io.github.nexalloy.morphe.resourceMappings
+import io.github.nexalloy.piko.inDexOrder
+import io.github.nexalloy.piko.isStatic
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.MethodMatcher
@@ -39,8 +41,6 @@ private fun DexKitBridge.methodsUsingStrings(vararg strings: String) = findMetho
 
 private fun List<MethodData>.parseFromJson() = filter { it.name.lowercase().contains("parsefromjson") }
 
-private val MethodData.isStatic get() = Modifier.isStatic(modifiers)
-
 /**
  * The first String field stored after the usage of [string].
  */
@@ -51,18 +51,6 @@ private fun MethodData.stringFieldStoredAfter(string: String): FieldData {
     return instructions.drop(stringIndex + 1).first {
         it.opcodeEnum == Opcode.IPUT_OBJECT && it.fieldRef?.typeName == "java.lang.String"
     }.fieldRef!!
-}
-
-/**
- * Methods of a class in the order of the dex file: direct methods first, then virtual methods,
- * each sorted by name and prototype.
- */
-private fun List<MethodData>.inDexOrder(): List<MethodData> {
-    fun MethodData.returnDescriptor() = descriptor.substringAfterLast(')')
-    fun MethodData.parameterDescriptor() = descriptor.substringAfter('(').substringBefore(')')
-    val (direct, virtual) = partition { it.isConstructor || it.isStaticInitializer || it.isStatic || Modifier.isPrivate(it.modifiers) }
-    val order = compareBy<MethodData>({ it.name }, { it.returnDescriptor() }, { it.parameterDescriptor() })
-    return direct.sortedWith(order) + virtual.sortedWith(order)
 }
 
 // region Ads
@@ -81,8 +69,16 @@ internal val suggestedContentKeys = listOf(
     "suggested_users",
 )
 
+/**
+ * Instagram 447 no longer uses the "suggested_businesses" and "in_feed_survey" keys in the feed item parser, so like
+ * Piko only the remaining keys are matched.
+ */
 val feedItemParseFromJsonMethod = findMethodDirect {
-    findMethodWithStrings(listOf("suggested_businesses") + suggestedContentKeys).parseFromJson().single()
+    findMethodWithStrings(suggestedContentKeys - "in_feed_survey") {
+        name = "unsafeParseFromJson"
+        returnType = "java.lang.Object"
+        paramCount = 1
+    }.single()
 }
 
 /**

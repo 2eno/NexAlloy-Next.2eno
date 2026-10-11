@@ -34,8 +34,9 @@ Ported from [Piko](https://github.com/crimera/piko).
 | App | Patches |
 | --- | --- |
 | Instagram | Hide ads and suggested content, anonymous viewing, disable analytics, layout and link options, and more |
+| X | Hide ads, recommendation items, recommended users and premium upsells, show sensitive media, remove view count, clear tracking params, no t.co links, and more |
 
-<sub>The Instagram patches are ported from [Piko](https://github.com/crimera/piko), see its [NOTICE](bundles/piko/src/main/java/io/github/nexalloy/piko/NOTICE).</sub>
+<sub>The Instagram and X patches are ported from [Piko](https://github.com/crimera/piko), see its [NOTICE](bundles/piko/src/main/java/io/github/nexalloy/piko/NOTICE).</sub>
 
 ### 2eno Patches (`2eno-*.nxb`)
 
