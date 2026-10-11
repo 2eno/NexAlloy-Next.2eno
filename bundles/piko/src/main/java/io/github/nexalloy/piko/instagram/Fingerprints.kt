@@ -13,6 +13,7 @@ import io.github.nexalloy.piko.isStatic
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.MethodMatcher
+import org.luckypray.dexkit.result.ClassData
 import org.luckypray.dexkit.result.FieldData
 import org.luckypray.dexkit.result.MethodData
 import java.lang.reflect.Modifier
@@ -358,6 +359,30 @@ val overflowMenuOptionClickMethod = findMethodDirect {
         returnType = "void"
         paramTypes(MEDIA_OPTION_CLASS)
     }.single()
+}
+
+private const val REELS_MENU_MODULE = "ClipsOrganicMediaItemViewMoreOptionsController"
+
+/**
+ * The bottom sheet builder created right after the reels menu module name, like in Piko's reels menu hook.
+ */
+private fun MethodData.reelsMenuBuilderClass(): ClassData? {
+    val instructions = instructions
+    val moduleIndex = instructions.indexOfFirst { it.string == REELS_MENU_MODULE }
+    if (moduleIndex < 0) return null
+    return instructions.drop(moduleIndex + 1).firstOrNull { it.opcodeEnum == Opcode.NEW_INSTANCE }?.classRef
+}
+
+/**
+ * Show the menu of reels and of posts shown like reels, such as in the "For you" feed, whose "reduced" options are
+ * "Not interested" and "Report". The redesigned sheet and the other sheet are built by different methods.
+ */
+val reelsMenuMethods = findMethodListDirect {
+    findMethodWithStrings(listOf(REELS_MENU_MODULE)).filter { it.reelsMenuBuilderClass() != null }
+}
+
+val reelsMenuBuilderClass = findClassDirect {
+    reelsMenuMethods().mapNotNull { it.reelsMenuBuilderClass() }.distinctBy { it.name }.single()
 }
 
 // endregion
