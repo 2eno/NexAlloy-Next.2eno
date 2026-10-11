@@ -55,7 +55,6 @@ private fun PatchExecutor.sanitizeParsedUrl(
 val OpenLinksExternally = patch(
     name = "Open links externally",
     description = "Opens links in your default browser instead of the in-app browser.",
-    use = false,
 ) {
     ::inAppBrowserOpenMethod.hookMethod {
         before { param ->

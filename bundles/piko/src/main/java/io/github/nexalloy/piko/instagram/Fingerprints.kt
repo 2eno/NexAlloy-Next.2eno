@@ -8,6 +8,8 @@ import io.github.nexalloy.morphe.findMethodListDirect
 import io.github.nexalloy.morphe.opcodeEnum
 import io.github.nexalloy.morphe.opcodes
 import io.github.nexalloy.morphe.resourceMappings
+import io.github.nexalloy.piko.inDexOrder
+import io.github.nexalloy.piko.isStatic
 import org.luckypray.dexkit.DexKitBridge
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.MethodMatcher
@@ -39,8 +41,6 @@ private fun DexKitBridge.methodsUsingStrings(vararg strings: String) = findMetho
 
 private fun List<MethodData>.parseFromJson() = filter { it.name.lowercase().contains("parsefromjson") }
 
-private val MethodData.isStatic get() = Modifier.isStatic(modifiers)
-
 /**
  * The first String field stored after the usage of [string].
  */
@@ -51,18 +51,6 @@ private fun MethodData.stringFieldStoredAfter(string: String): FieldData {
     return instructions.drop(stringIndex + 1).first {
         it.opcodeEnum == Opcode.IPUT_OBJECT && it.fieldRef?.typeName == "java.lang.String"
     }.fieldRef!!
-}
-
-/**
- * Methods of a class in the order of the dex file: direct methods first, then virtual methods,
- * each sorted by name and prototype.
- */
-private fun List<MethodData>.inDexOrder(): List<MethodData> {
-    fun MethodData.returnDescriptor() = descriptor.substringAfterLast(')')
-    fun MethodData.parameterDescriptor() = descriptor.substringAfter('(').substringBefore(')')
-    val (direct, virtual) = partition { it.isConstructor || it.isStaticInitializer || it.isStatic || Modifier.isPrivate(it.modifiers) }
-    val order = compareBy<MethodData>({ it.name }, { it.returnDescriptor() }, { it.parameterDescriptor() })
-    return direct.sortedWith(order) + virtual.sortedWith(order)
 }
 
 // region Ads
@@ -81,8 +69,16 @@ internal val suggestedContentKeys = listOf(
     "suggested_users",
 )
 
+/**
+ * Instagram 447 no longer uses the "suggested_businesses" and "in_feed_survey" keys in the feed item parser, so like
+ * Piko only the remaining keys are matched.
+ */
 val feedItemParseFromJsonMethod = findMethodDirect {
-    findMethodWithStrings(listOf("suggested_businesses") + suggestedContentKeys).parseFromJson().single()
+    findMethodWithStrings(suggestedContentKeys - "in_feed_survey") {
+        name = "unsafeParseFromJson"
+        returnType = "java.lang.Object"
+        paramCount = 1
+    }.single()
 }
 
 /**
@@ -98,11 +94,21 @@ val feedJsonKeyReaderMethod = findMethodDirect {
     instructions[keyIndex - 1].methodRef!!.also { require(it.returnTypeName == "java.lang.String") }
 }
 
+/**
+ * Like Piko, the checker is the method of the class logging "is_benefit_active" that looks the benefit up in the set
+ * of active benefits.
+ */
 val activeBenefitCheckerMethod = findMethodDirect {
-    findMethodWithStrings(listOf("is_benefit_active")) {
-        returnType = "boolean"
-        paramTypes("java.lang.String")
-    }.single()
+    fun MethodData.invokes(className: String, name: String) =
+        instructions.any { it.methodRef?.let { method -> method.className == className && method.name == name } == true }
+    methodsUsingStrings("is_benefit_active").mapNotNull { it.declaredClass }.distinctBy { it.name }
+        .flatMap { it.methods }
+        .single {
+            Modifier.isPublic(it.modifiers) && Modifier.isFinal(it.modifiers) &&
+                it.returnTypeName == "boolean" && it.paramTypeNames == listOf("java.lang.String") &&
+                it.invokes("java.util.Set", "contains") &&
+                it.invokes("java.util.concurrent.atomic.AtomicReference", "get")
+        }
 }
 
 // endregion
@@ -126,15 +132,27 @@ val markThreadSeenMethod = findMethodDirect {
     }.filter { it.isStatic && Modifier.isPublic(it.modifiers) && Modifier.isFinal(it.modifiers) }.single()
 }
 
+/**
+ * The text watcher of the DM composer. Piko writes the literals in decimal, they are 0x800033 and 0x800013.
+ */
 val directComposerOnTextChangedMethod = findMethodDirect {
     findMethod {
         matcher {
             name = "afterTextChanged"
-            usingNumbers(0x800032, 0x800013)
+            usingNumbers(0x800033, 0x800013)
         }
-    }.single().declaredClass!!.findMethod {
-        matcher { name = "onTextChanged" }
-    }.single()
+    }.firstNotNullOf { afterTextChanged ->
+        afterTextChanged.declaredClass!!.findMethod { matcher { name = "onTextChanged" } }.singleOrNull()
+    }
+}
+
+/**
+ * Tells the other side that you are typing, the first `(boolean)void` call of the composer's text watcher.
+ */
+val directTypingStatusMethod = findMethodDirect {
+    directComposerOnTextChangedMethod().instructions.firstNotNullOf { instruction ->
+        instruction.methodRef?.takeIf { it.returnTypeName == "void" && it.paramTypeNames == listOf("boolean") }
+    }
 }
 
 val screenshotDetectorMethod = findMethodDirect {
@@ -297,7 +315,7 @@ val clipsSwipeRefreshInterceptTouchMethod = findMethodDirect {
             paramTypes("android.view.MotionEvent")
             returnType = "boolean"
         }
-    }.single()
+    }.let { methods -> methods.singleOrNull { it.name == "onInterceptTouchEvent" } ?: methods.inDexOrder().first() }
 }
 
 /**
@@ -309,6 +327,37 @@ val storyProgressCompletedMethod = findMethodDirect {
         returnType = "void"
         paramTypes("java.lang.Object")
     }.first()
+}
+
+// endregion
+
+// region Download
+
+internal const val MEDIA_CLASS = "com.instagram.feed.media.Media"
+internal const val MEDIA_OPTION_CLASS = "com.instagram.feed.media.mediaoption.MediaOption\$Option"
+
+/**
+ * Builds the options of the post overflow menu, like Piko's fingerprint it is the lambda using "TEXT_POST_APP_INACTIVE".
+ */
+val overflowMenuOptionsMethod = findMethodDirect {
+    methodsUsingStrings("TEXT_POST_APP_INACTIVE").single()
+}
+
+/**
+ * Creates the options of the post overflow menu, its module name is "MediaOptionsOverflowMenuCreator".
+ */
+val overflowMenuCreatorClass = findClassDirect {
+    methodsUsingStrings("MediaOptionsOverflowMenuCreator").single().declaredClass!!
+}
+
+/**
+ * Handles the option tapped in the post overflow menu.
+ */
+val overflowMenuOptionClickMethod = findMethodDirect {
+    findMethodWithStrings(listOf("MediaOptionsOverflowHelper")) {
+        returnType = "void"
+        paramTypes(MEDIA_OPTION_CLASS)
+    }.single()
 }
 
 // endregion
@@ -360,17 +409,22 @@ val buildAgeField = findFieldDirect {
     buildAgeInitMethod().instructions.last { it.opcodeEnum == Opcode.IPUT }.fieldRef!!
 }
 
-val mainFeedRequestClass = findClassDirect {
-    findClass {
+/**
+ * The headers of the main feed request, the first map of a request class the method sending the feed request uses.
+ */
+val mainFeedRequestHeadersField = findFieldDirect {
+    val requestClasses = findClass {
         matcher { usingStrings(listOf("Request{mReason=", ", mInstanceNumber="), StringMatchType.Contains) }
-    }.single()
+    }.map { it.name }.toSet()
+    methodsUsingStrings("pagination_source", "FEED_REQUEST_SENT").firstNotNullOf { method ->
+        method.instructions.firstNotNullOfOrNull { instruction ->
+            instruction.fieldRef?.takeIf { it.typeName == "java.util.Map" && it.declaredClassName in requestClasses }
+        }
+    }
 }
 
-val mainFeedRequestHeadersField = findFieldDirect {
-    val requestClass = mainFeedRequestClass().name
-    methodsUsingStrings("pagination_source", "FEED_REQUEST_SENT").single().usingFields.first {
-        it.field.declaredClassName == requestClass && it.field.typeName == "java.util.Map"
-    }.field
+val mainFeedRequestClass = findClassDirect {
+    getClassData(mainFeedRequestHeadersField().declaredClassName)!!
 }
 
 val userAgentDisplayMetricsMethod = findMethodDirect {

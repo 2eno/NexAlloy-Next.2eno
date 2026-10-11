@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Piko Patches</string>
-    <string name="bundle_description">Instagram patches ported from Piko to Xposed hooks.</string>
+    <string name="bundle_description">Instagram and X patches ported from Piko to Xposed hooks.</string>
 </resources>
