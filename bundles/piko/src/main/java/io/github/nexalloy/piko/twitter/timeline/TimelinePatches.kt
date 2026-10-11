@@ -49,7 +49,6 @@ val ShowSensitiveMedia = patch(
 val HidePromoteButton = patch(
     name = "Hide promote button",
     description = "Hides the promote button under your own posts.",
-    use = false,
 ) {
     val eligibility = classLoader.loadClass(jsonModel("core.JsonTweetQuickPromoteEligibility"))
     hookJsonModel("com.twitter.api.model.json.core.JsonApiTweet") { tweet ->

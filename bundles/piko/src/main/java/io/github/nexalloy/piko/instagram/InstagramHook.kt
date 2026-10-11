@@ -3,6 +3,7 @@ package io.github.nexalloy.piko.instagram
 import io.github.nexalloy.piko.instagram.ads.HideAds
 import io.github.nexalloy.piko.instagram.ads.HideSuggestedContent
 import io.github.nexalloy.piko.instagram.ads.UnlockPlusBenefits
+import io.github.nexalloy.piko.instagram.download.DownloadMedia
 import io.github.nexalloy.piko.instagram.layout.DisableDoubleTapLike
 import io.github.nexalloy.piko.instagram.layout.DisableReelsScrolling
 import io.github.nexalloy.piko.instagram.layout.DisableStoryFlipping
@@ -41,6 +42,8 @@ val InstagramPatches = arrayOf(
     HideAds,
     HideSuggestedContent,
     UnlockPlusBenefits,
+    // Download
+    DownloadMedia,
     // Content
     DisableAnalytics,
     DisableStories,

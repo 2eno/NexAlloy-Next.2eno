@@ -132,14 +132,26 @@ val markThreadSeenMethod = findMethodDirect {
     }.filter { it.isStatic && Modifier.isPublic(it.modifiers) && Modifier.isFinal(it.modifiers) }.single()
 }
 
+/**
+ * The text watcher of the DM composer. Piko writes the literals in decimal, they are 0x800033 and 0x800013.
+ */
 val directComposerOnTextChangedMethod = findMethodDirect {
     findMethod {
         matcher {
             name = "afterTextChanged"
-            usingNumbers(0x800032, 0x800013)
+            usingNumbers(0x800033, 0x800013)
         }
     }.firstNotNullOf { afterTextChanged ->
         afterTextChanged.declaredClass!!.findMethod { matcher { name = "onTextChanged" } }.singleOrNull()
+    }
+}
+
+/**
+ * Tells the other side that you are typing, the first `(boolean)void` call of the composer's text watcher.
+ */
+val directTypingStatusMethod = findMethodDirect {
+    directComposerOnTextChangedMethod().instructions.firstNotNullOf { instruction ->
+        instruction.methodRef?.takeIf { it.returnTypeName == "void" && it.paramTypeNames == listOf("boolean") }
     }
 }
 
@@ -315,6 +327,37 @@ val storyProgressCompletedMethod = findMethodDirect {
         returnType = "void"
         paramTypes("java.lang.Object")
     }.first()
+}
+
+// endregion
+
+// region Download
+
+internal const val MEDIA_CLASS = "com.instagram.feed.media.Media"
+internal const val MEDIA_OPTION_CLASS = "com.instagram.feed.media.mediaoption.MediaOption\$Option"
+
+/**
+ * Builds the options of the post overflow menu, like Piko's fingerprint it is the lambda using "TEXT_POST_APP_INACTIVE".
+ */
+val overflowMenuOptionsMethod = findMethodDirect {
+    methodsUsingStrings("TEXT_POST_APP_INACTIVE").single()
+}
+
+/**
+ * Creates the options of the post overflow menu, its module name is "MediaOptionsOverflowMenuCreator".
+ */
+val overflowMenuCreatorClass = findClassDirect {
+    methodsUsingStrings("MediaOptionsOverflowMenuCreator").single().declaredClass!!
+}
+
+/**
+ * Handles the option tapped in the post overflow menu.
+ */
+val overflowMenuOptionClickMethod = findMethodDirect {
+    findMethodWithStrings(listOf("MediaOptionsOverflowHelper")) {
+        returnType = "void"
+        paramTypes(MEDIA_OPTION_CLASS)
+    }.single()
 }
 
 // endregion

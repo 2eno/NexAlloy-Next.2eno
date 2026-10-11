@@ -46,7 +46,6 @@ private val onboardingScreens = setOf(
 val DisableOnboardingPermissionPrompts = patch(
     name = "Disable onboarding permission prompts",
     description = "Prevents the contacts and location permission prompts from appearing.",
-    use = false,
 ) {
     dependsOn(InterceptRequests)
     RequestFilter.enable(RequestFilter.Rule.ONBOARDING_CONSENT)
@@ -62,7 +61,6 @@ val DisableOnboardingPermissionPrompts = patch(
 val RemoveBuildExpiredPopup = patch(
     name = "Remove build expired popup",
     description = "Removes the popup that appears when the app version gets old.",
-    use = false,
 ) {
     val appAge = ::buildAgeField.field.apply { isAccessible = true }
     ::buildAgeInitMethod.hookMethod {
@@ -112,7 +110,6 @@ val ImproveImageViewing = patch(
 val UnlockDeveloperOptions = patch(
     name = "Unlock developer options",
     description = "Opens the developer options by long pressing the home button.",
-    use = false,
 ) {
     val activityField = ::homeIconActivityField.field.apply { isAccessible = true }
     val userSessionField = ::homeIconUserSessionField.field.apply { isAccessible = true }

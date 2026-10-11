@@ -6,6 +6,7 @@ import de.robv.android.xposed.XC_MethodReplacement.DO_NOTHING
 import io.github.nexalloy.patch
 import io.github.nexalloy.piko.instagram.directComposerOnTextChangedMethod
 import io.github.nexalloy.piko.instagram.directScreenshotCaptureMethod
+import io.github.nexalloy.piko.instagram.directTypingStatusMethod
 import io.github.nexalloy.piko.instagram.markThreadSeenMethod
 import io.github.nexalloy.piko.instagram.screenshotDetectorMethod
 import io.github.nexalloy.piko.instagram.screenshotObserverStartMethod
@@ -19,7 +20,6 @@ import java.lang.reflect.Method
 val ViewStoriesAnonymously = patch(
     name = "View stories anonymously",
     description = "View stories without appearing in the viewer list.",
-    use = false,
 ) {
     dependsOn(InterceptRequests)
     RequestFilter.enable(RequestFilter.Rule.STORY_SEEN)
@@ -33,7 +33,6 @@ val ViewStoriesAnonymously = patch(
 val ViewDmsAnonymously = patch(
     name = "View DMs anonymously",
     description = "Read messages without sending read receipts.",
-    use = false,
 ) {
     ::markThreadSeenMethod.hookMethod(DO_NOTHING)
 }
@@ -41,15 +40,16 @@ val ViewDmsAnonymously = patch(
 val DisableTypingStatus = patch(
     name = "Disable typing status",
     description = "Stops showing others that you are typing a message.",
-    use = false,
 ) {
-    ::directComposerOnTextChangedMethod.hookMethod(DO_NOTHING)
+    // Like Piko, the text watcher still keeps the typed text, only the typing status is not sent.
+    ::directComposerOnTextChangedMethod.hookMethod(scopedHook(::directTypingStatusMethod.member) {
+        before { it.result = null }
+    })
 }
 
 val DisableScreenshotDetection = patch(
     name = "Disable screenshot detection",
     description = "Disables the screenshot detection and allows screenshots of view once media in DMs.",
-    use = false,
 ) {
     // Do not observe the screenshot directory.
     val observerStart = ::screenshotObserverStartMethod.member
