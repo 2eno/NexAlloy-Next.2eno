@@ -6,7 +6,10 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.view.View
 import android.widget.Toast
+import io.github.nexalloy.HookDsl
+import io.github.nexalloy.IScopedHookCallback
 import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.patch
 import io.github.nexalloy.piko.instagram.MEDIA_CLASS
@@ -14,8 +17,13 @@ import io.github.nexalloy.piko.instagram.MEDIA_OPTION_CLASS
 import io.github.nexalloy.piko.instagram.overflowMenuCreatorClass
 import io.github.nexalloy.piko.instagram.overflowMenuOptionClickMethod
 import io.github.nexalloy.piko.instagram.overflowMenuOptionsMethod
+import io.github.nexalloy.piko.instagram.reelsMenuBuilderClass
+import io.github.nexalloy.piko.instagram.reelsMenuMethods
+import io.github.nexalloy.scopedHook
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 private const val DOWNLOAD_OPTION = "NEXALLOY_DOWNLOAD"
@@ -88,65 +96,123 @@ private fun download(activity: Activity, items: List<MediaExtractor.Item>) {
         .show()
 }
 
+/**
+ * The activity [owner] keeps in a field.
+ */
+private fun activityIn(owner: Any): Activity? = owner as? Activity
+    ?: owner.javaClass.declaredFields.firstNotNullOfOrNull { field ->
+        field.takeIf { Activity::class.java.isAssignableFrom(it.type) && !Modifier.isStatic(it.modifiers) }
+            ?.apply { isAccessible = true }?.get(owner) as Activity?
+    }
+
+private const val REELS_MENU_MODULE = "ClipsOrganicMediaItemViewMoreOptionsController"
+
 val DownloadMedia = patch(
     name = "Download media",
-    description = "Adds a download option to the menu of posts. Files are saved to Download/Instagram.",
+    description = "Adds a download option to the menu of posts and reels. Files are saved to Download/Instagram.",
 ) {
-    val optionClass = classLoader.loadClass(MEDIA_OPTION_CLASS)
     val mediaClass = classLoader.loadClass(MEDIA_CLASS)
-    val creatorClass = ::overflowMenuCreatorClass.clazz
     val extractor = MediaExtractor(classLoader)
-
-    // addOption(style, option, creator, CharSequence label, ArrayList options, boolean), adding Instagram's own options.
-    val addOption = creatorClass.declaredMethods.single { method ->
-        val parameters = method.parameterTypes
-        Modifier.isStatic(method.modifiers) && parameters.size == 6 && parameters[0].isEnum &&
-            parameters[1] == optionClass && parameters[2] == creatorClass &&
-            parameters[3] == CharSequence::class.java && parameters[4] == ArrayList::class.java &&
-            parameters[5] == Boolean::class.java
-    }.apply { isAccessible = true }
-    val style = addOption.parameterTypes[0].enumConstants!!.single { (it as Enum<*>).name == "NORMAL" }
-
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
-    val option = newMenuOption(optionClass, DOWNLOAD_OPTION, 500, icon)
 
-    ::overflowMenuOptionsMethod.hookMethod {
-        after { param ->
-            @Suppress("UNCHECKED_CAST")
-            val options = param.result as? ArrayList<Any?> ?: return@after
-            try {
-                val creator = param.args.filterNotNull().firstNotNullOfOrNull { captured(it, creatorClass) }
-                    ?: return@after
-                val added = ArrayList<Any?>()
-                addOption.invoke(null, style, option, creator, "Download", added, false)
-                // Like Piko's, the option is the first of the menu.
-                if (added.isNotEmpty() && options.none { it in added }) options.addAll(0, added)
-            } catch (e: Exception) {
-                PatcherLog.error(e) { "Could not add the download option" }
-            }
+    fun downloadMedia(activity: Activity, media: Any) {
+        try {
+            download(activity, extractor.items(media))
+        } catch (e: Exception) {
+            PatcherLog.error(e) { "Could not download the media" }
+            toast(activity, "Download failed")
         }
     }
 
-    ::overflowMenuOptionClickMethod.hookMethod {
-        before { param ->
-            if (param.args[0] !== option) return@before
-            param.result = null
-            val helper = param.thisObject
-            val activity = helper.javaClass.declaredFields.firstNotNullOfOrNull { field ->
-                field.takeIf { Activity::class.java.isAssignableFrom(it.type) && !Modifier.isStatic(it.modifiers) }
-                    ?.apply { isAccessible = true }?.get(helper) as Activity?
-            } ?: return@before
-            try {
+    // The overflow menu of posts in the feed.
+    val feedMenu = runCatching {
+        val optionClass = classLoader.loadClass(MEDIA_OPTION_CLASS)
+        val creatorClass = ::overflowMenuCreatorClass.clazz
+
+        // addOption(style, option, creator, CharSequence label, ArrayList options, boolean), adding Instagram's own options.
+        val addOption = creatorClass.declaredMethods.single { method ->
+            val parameters = method.parameterTypes
+            Modifier.isStatic(method.modifiers) && parameters.size == 6 && parameters[0].isEnum &&
+                parameters[1] == optionClass && parameters[2] == creatorClass &&
+                parameters[3] == CharSequence::class.java && parameters[4] == ArrayList::class.java &&
+                parameters[5] == Boolean::class.java
+        }.apply { isAccessible = true }
+        val style = addOption.parameterTypes[0].enumConstants!!.single { (it as Enum<*>).name == "NORMAL" }
+        val option = newMenuOption(optionClass, DOWNLOAD_OPTION, 500, icon)
+
+        ::overflowMenuOptionsMethod.hookMethod {
+            after { param ->
+                @Suppress("UNCHECKED_CAST")
+                val options = param.result as? ArrayList<Any?> ?: return@after
+                try {
+                    val creator = param.args.filterNotNull().firstNotNullOfOrNull { captured(it, creatorClass) }
+                        ?: return@after
+                    val added = ArrayList<Any?>()
+                    addOption.invoke(null, style, option, creator, "Download", added, false)
+                    // Like Piko's, the option is the first of the menu.
+                    if (added.isNotEmpty() && options.none { it in added }) options.addAll(0, added)
+                } catch (e: Exception) {
+                    PatcherLog.error(e) { "Could not add the download option" }
+                }
+            }
+        }
+
+        ::overflowMenuOptionClickMethod.hookMethod {
+            before { param ->
+                if (param.args[0] !== option) return@before
+                param.result = null
+                val helper = param.thisObject
+                val activity = activityIn(helper) ?: return@before
                 // The menu reads its post with a static getter of the helper.
-                val media = helper.javaClass.declaredMethods.first { method ->
-                    Modifier.isStatic(method.modifiers) && method.returnType == mediaClass &&
-                        method.parameterTypes.contentEquals(arrayOf(helper.javaClass))
-                }.apply { isAccessible = true }.invoke(null, helper) ?: return@before
-                download(activity, extractor.items(media))
-            } catch (e: Exception) {
-                PatcherLog.error(e) { "Could not download the media" }
-                toast(activity, "Download failed")
+                val media = runCatching {
+                    helper.javaClass.declaredMethods.first { method ->
+                        Modifier.isStatic(method.modifiers) && method.returnType == mediaClass &&
+                            method.parameterTypes.contentEquals(arrayOf(helper.javaClass))
+                    }.apply { isAccessible = true }.invoke(null, helper)
+                }.onFailure { PatcherLog.error(it) { "Could not read the post of the menu" } }.getOrNull()
+                if (media == null) toast(activity, "Download failed") else downloadMedia(activity, media)
             }
         }
-    }
+    }.onFailure { PatcherLog.error(it) { "No download option in the post menu" } }
+
+    // The menu of reels and of posts shown like reels, such as in the "For you" feed. Like Piko's, the option is
+    // added to the bottom sheet builder right after the menu creates it.
+    val reelsMenu = runCatching {
+        val builderClass = ::reelsMenuBuilderClass.clazz
+        // addItem(Context, OnClickListener, String label, int icon, boolean), what Piko's reels button calls.
+        val addItem = builderClass.declaredMethods.single { method ->
+            !Modifier.isStatic(method.modifiers) && method.parameterTypes.contentEquals(
+                arrayOf(
+                    Context::class.java, View.OnClickListener::class.java, String::class.java,
+                    Int::class.java, Boolean::class.java,
+                )
+            )
+        }.apply { isAccessible = true }
+
+        val handledBuilders: MutableSet<Any> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+        val addDownload: HookDsl<IScopedHookCallback>.() -> Unit = {
+            after { param ->
+                // Only the builder of the menu itself, once even when both menu methods are running.
+                if (REELS_MENU_MODULE !in param.args || !handledBuilders.add(param.thisObject)) return@after
+                try {
+                    val owners = listOfNotNull(outerParam.thisObject) + outerParam.args.filterNotNull()
+                    val media = owners.firstOrNull { mediaClass.isInstance(it) }
+                        ?: owners.firstNotNullOfOrNull { captured(it, mediaClass) }
+                        ?: return@after
+                    val activity = owners.firstNotNullOfOrNull(::activityIn)
+                        ?: (owners.firstOrNull { it is View } as View?)?.context as? Activity
+                        ?: return@after
+                    val onClick = View.OnClickListener { downloadMedia(activity, media) }
+                    addItem.invoke(param.thisObject, activity, onClick, "Download", icon, false)
+                } catch (e: Exception) {
+                    PatcherLog.error(e) { "Could not add the download option to the reels menu" }
+                }
+            }
+        }
+        val builderConstructors = builderClass.declaredConstructors.map { it to addDownload }.toTypedArray()
+        val menuMethods = ::reelsMenuMethods.dexMethodList.ifEmpty { throw Exception("Reels menu not found") }
+        menuMethods.forEach { it.hookMethod(scopedHook(*builderConstructors)) }
+    }.onFailure { PatcherLog.error(it) { "No download option in the reels menu" } }
+
+    if (feedMenu.isFailure && reelsMenu.isFailure) throw Exception("No menu found for the download option")
 }
