@@ -94,11 +94,21 @@ val feedJsonKeyReaderMethod = findMethodDirect {
     instructions[keyIndex - 1].methodRef!!.also { require(it.returnTypeName == "java.lang.String") }
 }
 
+/**
+ * Like Piko, the checker is the method of the class logging "is_benefit_active" that looks the benefit up in the set
+ * of active benefits.
+ */
 val activeBenefitCheckerMethod = findMethodDirect {
-    findMethodWithStrings(listOf("is_benefit_active")) {
-        returnType = "boolean"
-        paramTypes("java.lang.String")
-    }.single()
+    fun MethodData.invokes(className: String, name: String) =
+        instructions.any { it.methodRef?.let { method -> method.className == className && method.name == name } == true }
+    methodsUsingStrings("is_benefit_active").mapNotNull { it.declaredClass }.distinctBy { it.name }
+        .flatMap { it.methods }
+        .single {
+            Modifier.isPublic(it.modifiers) && Modifier.isFinal(it.modifiers) &&
+                it.returnTypeName == "boolean" && it.paramTypeNames == listOf("java.lang.String") &&
+                it.invokes("java.util.Set", "contains") &&
+                it.invokes("java.util.concurrent.atomic.AtomicReference", "get")
+        }
 }
 
 // endregion
@@ -128,9 +138,9 @@ val directComposerOnTextChangedMethod = findMethodDirect {
             name = "afterTextChanged"
             usingNumbers(0x800032, 0x800013)
         }
-    }.single().declaredClass!!.findMethod {
-        matcher { name = "onTextChanged" }
-    }.single()
+    }.firstNotNullOf { afterTextChanged ->
+        afterTextChanged.declaredClass!!.findMethod { matcher { name = "onTextChanged" } }.singleOrNull()
+    }
 }
 
 val screenshotDetectorMethod = findMethodDirect {
@@ -293,7 +303,7 @@ val clipsSwipeRefreshInterceptTouchMethod = findMethodDirect {
             paramTypes("android.view.MotionEvent")
             returnType = "boolean"
         }
-    }.single()
+    }.let { methods -> methods.singleOrNull { it.name == "onInterceptTouchEvent" } ?: methods.inDexOrder().first() }
 }
 
 /**
@@ -356,17 +366,22 @@ val buildAgeField = findFieldDirect {
     buildAgeInitMethod().instructions.last { it.opcodeEnum == Opcode.IPUT }.fieldRef!!
 }
 
-val mainFeedRequestClass = findClassDirect {
-    findClass {
+/**
+ * The headers of the main feed request, the first map of a request class the method sending the feed request uses.
+ */
+val mainFeedRequestHeadersField = findFieldDirect {
+    val requestClasses = findClass {
         matcher { usingStrings(listOf("Request{mReason=", ", mInstanceNumber="), StringMatchType.Contains) }
-    }.single()
+    }.map { it.name }.toSet()
+    methodsUsingStrings("pagination_source", "FEED_REQUEST_SENT").firstNotNullOf { method ->
+        method.instructions.firstNotNullOfOrNull { instruction ->
+            instruction.fieldRef?.takeIf { it.typeName == "java.util.Map" && it.declaredClassName in requestClasses }
+        }
+    }
 }
 
-val mainFeedRequestHeadersField = findFieldDirect {
-    val requestClass = mainFeedRequestClass().name
-    methodsUsingStrings("pagination_source", "FEED_REQUEST_SENT").single().usingFields.first {
-        it.field.declaredClassName == requestClass && it.field.typeName == "java.util.Map"
-    }.field
+val mainFeedRequestClass = findClassDirect {
+    getClassData(mainFeedRequestHeadersField().declaredClassName)!!
 }
 
 val userAgentDisplayMetricsMethod = findMethodDirect {
