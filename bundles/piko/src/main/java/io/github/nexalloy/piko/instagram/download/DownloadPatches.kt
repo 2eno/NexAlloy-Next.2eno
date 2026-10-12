@@ -21,6 +21,9 @@ import io.github.nexalloy.piko.instagram.overflowMenuCreatorClass
 import io.github.nexalloy.piko.instagram.overflowMenuOptionClickMethod
 import io.github.nexalloy.piko.instagram.overflowMenuOptionsMethod
 import io.github.nexalloy.piko.instagram.SHEET_MENU_MODULES
+import io.github.nexalloy.piko.instagram.mediaCarouselGetter
+import io.github.nexalloy.piko.instagram.mediaImageInfoGetter
+import io.github.nexalloy.piko.instagram.mediaVideoVersionsGetter
 import io.github.nexalloy.piko.instagram.sheetMenuBuilderClass
 import io.github.nexalloy.piko.instagram.sheetMenuMethods
 import io.github.nexalloy.piko.instagram.storyMenuLabelsMethod
@@ -97,19 +100,36 @@ private fun enqueue(context: Context, items: List<MediaExtractor.Item>) {
 }
 
 /**
- * Downloads [items], asking which items of a carousel to download.
+ * The photo of [item], the cover image when it is a video.
+ */
+private fun asImage(item: MediaExtractor.Item) = item.imageUrl?.let { MediaExtractor.Item(it, isVideo = false, imageUrl = it) }
+
+/**
+ * Downloads [items]. Videos can also be downloaded as image, their cover image, and the items of a carousel can be
+ * chosen.
  */
 private fun download(activity: Activity, items: List<MediaExtractor.Item>) {
     if (items.isEmpty()) return toast(activity, "No media found")
-    if (items.size == 1) return enqueue(activity, items)
-    val choices = arrayOf("All (${items.size})") + items.indices.map { index ->
-        "${index + 1}. ${if (items[index].isVideo) "Video" else "Photo"}"
+    val hasVideo = items.any { it.isVideo && it.imageUrl != null }
+    if (items.size == 1 && !hasVideo) return enqueue(activity, items)
+
+    val choices = mutableListOf<Pair<String, () -> Unit>>()
+    if (items.size == 1) {
+        choices += "Video" to { enqueue(activity, items) }
+        choices += "Download as image" to { enqueue(activity, items.mapNotNull(::asImage)) }
+    } else {
+        choices += "All (${items.size})" to { enqueue(activity, items) }
+        if (hasVideo) choices += "All as images" to { enqueue(activity, items.mapNotNull(::asImage)) }
+        items.forEachIndexed { index, item ->
+            choices += "${index + 1}. ${if (item.isVideo) "Video" else "Photo"}" to { enqueue(activity, listOf(item)) }
+            if (item.isVideo && item.imageUrl != null) {
+                choices += "${index + 1}. Video as image" to { enqueue(activity, listOfNotNull(asImage(item))) }
+            }
+        }
     }
     AlertDialog.Builder(activity)
         .setTitle("Download")
-        .setItems(choices) { _, which ->
-            enqueue(activity, if (which == 0) items else listOf(items[which - 1]))
-        }
+        .setItems(choices.map { it.first }.toTypedArray()) { _, which -> choices[which].second() }
         .show()
 }
 
@@ -133,7 +153,15 @@ val DownloadMedia = patch(
     description = "Adds a download option to the menus of posts, reels and stories. Files are saved to Download/Instagram.",
 ) {
     val mediaClass = classLoader.loadClass(MEDIA_CLASS)
-    val extractor = MediaExtractor(classLoader)
+    fun getter(find: () -> java.lang.reflect.Method) =
+        runCatching(find).onFailure { PatcherLog.error(it) { "Media getter not found" } }.getOrNull()
+    val extractor = MediaExtractor(
+        classLoader,
+        getter { ::mediaImageInfoGetter.method },
+        getter { ::mediaVideoVersionsGetter.method },
+        getter { ::mediaCarouselGetter.method },
+        ::log,
+    )
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
 
     fun downloadMedia(activity: Activity, media: Any?) {
@@ -147,6 +175,7 @@ val DownloadMedia = patch(
             download(activity, items)
         } catch (e: Exception) {
             PatcherLog.error(e) { "Could not download the media" }
+            log("failed: ${e.stackTraceToString().take(1500)}")
             toast(activity, "Download failed")
         }
     }
