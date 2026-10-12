@@ -2,11 +2,15 @@ package io.github.nexalloy.piko.instagram.download
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -30,10 +34,14 @@ import io.github.nexalloy.piko.instagram.storyMenuLabelsMethod
 import io.github.nexalloy.piko.instagram.storyMenuRowConstructor
 import io.github.nexalloy.piko.instagram.storyMenuSheetMethod
 import io.github.nexalloy.scopedHook
+import java.io.File
+import java.io.IOException
 import java.lang.reflect.Field
 import java.lang.ref.WeakReference
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -82,21 +90,83 @@ private fun captured(owner: Any, type: Class<*>): Any? =
 
 private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 
-private fun enqueue(context: Context, items: List<MediaExtractor.Item>) {
-    val downloads = context.getSystemService(DownloadManager::class.java)
-    items.forEach { item ->
-        val uri = Uri.parse(item.url)
-        val extension = if (item.isVideo) ".mp4" else ".jpg"
-        val name = uri.lastPathSegment?.takeIf { it.contains('.') }
-            ?: "instagram_${System.currentTimeMillis()}$extension"
-        downloads.enqueue(
-            DownloadManager.Request(uri)
-                .setTitle(name)
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "$DOWNLOAD_FOLDER/$name")
-        )
+private val mainHandler = Handler(Looper.getMainLooper())
+
+/**
+ * The file name of [item], the last path segment of its URL or a new name.
+ */
+private fun fileName(item: MediaExtractor.Item): String {
+    val extension = if (item.isVideo) ".mp4" else ".jpg"
+    val name = Uri.parse(item.url).lastPathSegment?.takeIf { it.contains('.') }
+        ?: "instagram_${System.currentTimeMillis()}$extension"
+    // A cover image keeps the name of its video file otherwise.
+    return if (!item.isVideo && !name.endsWith(".jpg") && !name.endsWith(".webp") && !name.endsWith(".heic")) "$name.jpg"
+    else name
+}
+
+/**
+ * Saves the file of [item] to Download/Instagram. Like Piko, the file is fetched by the app itself, as not every
+ * device has the download manager.
+ */
+private fun save(context: Context, item: MediaExtractor.Item) {
+    val name = fileName(item)
+    val mimeType = if (item.isVideo) "video/mp4" else if (name.endsWith(".webp")) "image/webp" else "image/jpeg"
+    val connection = URL(item.url).openConnection() as HttpURLConnection
+    try {
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
+        if (connection.responseCode !in 200..299) throw IOException("HTTP ${connection.responseCode}")
+        connection.inputStream.use { input ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IOException("MediaStore did not create $name")
+                try {
+                    resolver.openOutputStream(uri)!!.use { output -> input.copyTo(output) }
+                    resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                } catch (e: Exception) {
+                    resolver.delete(uri, null, null)
+                    throw e
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val folder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), DOWNLOAD_FOLDER)
+                folder.mkdirs()
+                File(folder, name).outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+    } finally {
+        connection.disconnect()
     }
+    log("saved $name")
+}
+
+private fun enqueue(context: Context, items: List<MediaExtractor.Item>) {
+    val appContext = context.applicationContext ?: context
     toast(context, if (items.size == 1) "Downloading" else "Downloading ${items.size} items")
+    Thread {
+        var saved = 0
+        items.forEach { item ->
+            try {
+                save(appContext, item)
+                saved++
+            } catch (e: Exception) {
+                log("failed to save ${item.url}: ${e.stackTraceToString().take(1500)}")
+            }
+        }
+        val text = when {
+            saved == items.size -> "Saved to Download/$DOWNLOAD_FOLDER"
+            saved == 0 -> "Download failed"
+            else -> "Saved $saved of ${items.size} to Download/$DOWNLOAD_FOLDER"
+        }
+        mainHandler.post { toast(appContext, text) }
+    }.apply { name = "NexAlloy download" }.start()
 }
 
 /**
