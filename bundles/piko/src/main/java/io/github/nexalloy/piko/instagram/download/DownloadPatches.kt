@@ -223,7 +223,13 @@ private fun showVariants(
 /**
  * Shows Piko's download options for the item at [position], the item of a carousel on screen.
  */
-private fun download(dialog: InstagramDialog, activity: Activity, items: List<MediaExtractor.Item>, position: Int) {
+private fun download(
+    dialog: InstagramDialog,
+    activity: Activity,
+    items: List<MediaExtractor.Item>,
+    position: Int,
+    extraOptions: List<Pair<String, () -> Unit>>,
+) {
     if (items.isEmpty()) return toast(activity, "No media found")
     val current = items[position.takeIf { it in items.indices } ?: 0]
     val options = mutableListOf<Pair<String, () -> Unit>>()
@@ -246,6 +252,7 @@ private fun download(dialog: InstagramDialog, activity: Activity, items: List<Me
         options += "Open image externally" to { openExternally(activity, current.url, isVideo = false) }
     }
     if (items.size > 1) options += "Download all" to { enqueue(activity, items) }
+    options += extraOptions
     dialog.show(activity, "Download options", options)
 }
 
@@ -305,7 +312,23 @@ val DownloadMedia = patch(
     }
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
 
-    fun downloadMedia(activity: Activity, media: Any?, owners: List<Any?> = emptyList()) {
+    val highlightCover = optional("Highlight cover") { HighlightCover(classLoader, ::log) }
+
+    /**
+     * The option to download the cover of the highlight reachable from [owners], when a highlight is shown.
+     */
+    fun highlightCoverOptions(activity: Activity, owners: List<Any?>): List<Pair<String, () -> Unit>> {
+        val url = runCatching { highlightCover?.url(owners) }
+            .onFailure { log("highlight cover failed: $it") }.getOrNull() ?: return emptyList()
+        return listOf("Download highlight cover" to { enqueue(activity, listOf(MediaExtractor.Item(url, false, url))) })
+    }
+
+    fun downloadMedia(
+        activity: Activity,
+        media: Any?,
+        owners: List<Any?> = emptyList(),
+        storyOwners: List<Any?> = emptyList(),
+    ) {
         try {
             if (media == null) {
                 log("no media to download")
@@ -314,7 +337,7 @@ val DownloadMedia = patch(
             val items = extractor.items(media)
             val position = if (items.size > 1) position(owners) else 0
             log("${items.size} items, at $position")
-            download(dialog, activity, items, position)
+            download(dialog, activity, items, position, highlightCoverOptions(activity, storyOwners))
         } catch (e: Exception) {
             PatcherLog.error(e) { "Could not download the media" }
             log("failed: ${e.stackTraceToString().take(1500)}")
@@ -479,7 +502,7 @@ val DownloadMedia = patch(
                     log("tapped in the story menu")
                     val helper = param.args.first { helperClass.isInstance(it) }
                     val activity = activityField.get(helper) as Activity? ?: return@before log("no story activity")
-                    downloadMedia(activity, storyMedia(reelItemField.get(helper)))
+                    downloadMedia(activity, storyMedia(reelItemField.get(helper)), storyOwners = listOf(helper))
                 }
             }
         }
@@ -517,12 +540,13 @@ val DownloadMedia = patch(
                     if (hasDownload) return@before
                     val activity = viewer.javaClass.getMethod("getActivity").invoke(viewer) as Activity?
                         ?: return@before log("no activity for the story menu rows")
-                    val media = storyMedia(currentItem.invoke(viewer))
+                    val reelItem = currentItem.invoke(viewer)
+                    val media = storyMedia(reelItem)
                     val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
                         when (method.name) {
                             "invoke" -> {
                                 log("tapped in the story menu rows")
-                                downloadMedia(activity, media)
+                                downloadMedia(activity, media, storyOwners = listOf(viewer, reelItem))
                                 Unit
                             }
                             "equals" -> proxy === args?.firstOrNull()
