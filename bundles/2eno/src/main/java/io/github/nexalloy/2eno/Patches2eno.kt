@@ -3,6 +3,7 @@ package io.github.nexalloy.`2eno`
 import io.github.nexalloy.AppPatchInfo
 import io.github.nexalloy.AppTarget
 import io.github.nexalloy.PatchBundle
+import io.github.nexalloy.`2eno`.instagram.InstagramPatches
 import io.github.nexalloy.`2eno`.interpals.InterPalsPatches
 import io.github.nexalloy.`2eno`.kleinanzeigen.KleinanzeigenPatches
 import io.github.nexalloy.`2eno`.spotify.SpotifyPatches
@@ -21,6 +22,11 @@ object Patches2eno : PatchBundle {
             targets = listOf(AppTarget("2026.41.0")), appIconColor = 0x86B817,
         ),
         AppPatchInfo("Untappd", "com.untappdllc.app", UntappdPatches, appIconColor = 0xFFC000),
+        AppPatchInfo(
+            "Instagram", "com.instagram.android", InstagramPatches,
+            targets = listOf(AppTarget("447.0.0.55.81")),
+            appIconColor = 0xFC483C,
+        ),
         AppPatchInfo(
             "InterPals", "net.interpals", InterPalsPatches,
             targets = listOf(AppTarget("2.16.1")), appIconColor = 0x3B6EA5,
