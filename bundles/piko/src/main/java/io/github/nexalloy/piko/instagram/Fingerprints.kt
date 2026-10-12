@@ -462,6 +462,39 @@ val storyMenuRowConstructor = findMethodDirect {
 }
 
 /**
+ * Adds the buttons below the expanded profile picture (Follow, Share profile, Copy link, QR code):
+ * `(ViewGroup bar, UserSession, List actions, boolean, boolean)`, inflating a view for each action between spaces.
+ */
+val profilePictureActionsMethod = findMethodDirect {
+    findMethod {
+        matcher {
+            returnType = "void"
+            paramTypes("android.view.ViewGroup", USER_SESSION_CLASS, "java.util.List", "boolean", "boolean")
+            addInvoke {
+                declaredClass("android.view.LayoutInflater")
+                name = "inflate"
+            }
+            addInvoke {
+                declaredClass("android.widget.Space")
+                name = "<init>"
+            }
+        }
+    }.single()
+}
+
+/**
+ * A button below the expanded profile picture, created with `(String label, Function0 onClick, int icon, boolean)`.
+ */
+val profilePictureActionConstructor = findMethodDirect {
+    profilePictureActionsMethod().instructions.mapNotNull { it.classRef }.distinctBy { it.name }
+        .flatMap { it.methods }
+        .single {
+            it.isConstructor && it.paramTypeNames ==
+                listOf("java.lang.String", "kotlin.jvm.functions.Function0", "int", "boolean")
+        }
+}
+
+/**
  * The carousel position of a post, the int field of the post state read by the getter of `EditMediaInfoFragment`
  * returning the current media, like Piko's decoder:
  * `iget-object state; if-eqz; iget position, state; ...; invoke-static (List, int)Media`.
