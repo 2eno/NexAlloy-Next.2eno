@@ -12,6 +12,7 @@ import android.widget.Toast
 import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.hookMethod
 import io.github.nexalloy.patch
+import io.github.nexalloy.`2eno`.instagram.friendshipStatusMapMethod
 import io.github.nexalloy.`2eno`.instagram.jsonParserFromStringMethods
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
@@ -292,6 +293,23 @@ val StealthFollow = patch(
         return null
     }
 
+    // Whether the viewer already follows a user normally, read from the "following" entry of the friendship status
+    // map. The button is hidden for such users, since their stories already come through the normal follow.
+    val friendshipMap = runCatching { ::friendshipStatusMapMethod.method.apply { isAccessible = true } }
+        .onFailure { PatcherLog.error(it) { "Friendship status map method not found" } }.getOrNull()
+    val statusGetters = friendshipMap?.parameterTypes?.firstOrNull()?.let { statusClass ->
+        userClass.methods.filter { it.parameterCount == 0 && it.returnType == statusClass }.onEach { it.isAccessible = true }
+    }.orEmpty()
+    fun alreadyFollowing(user: Any): Boolean {
+        if (friendshipMap == null) return false
+        for (getter in statusGetters) {
+            val status = runCatching { getter.invoke(user) }.getOrNull() ?: continue
+            val map = runCatching { friendshipMap.invoke(null, status) as? Map<*, *> }.getOrNull() ?: continue
+            if (map["following"] == true) return true
+        }
+        return false
+    }
+
     var resumedProfile = WeakReference<Any>(null)
     profileClass.getDeclaredMethod("onResume").hookMethod {
         after { param -> resumedProfile = WeakReference(param.thisObject) }
@@ -315,6 +333,8 @@ val StealthFollow = patch(
                 val profile = resumedProfile.get() ?: return@before
                 val actions = param.args[2] as? List<*> ?: return@before
                 val user = profileUser.invoke(profile) ?: return@before
+                // Hidden when the account is already followed normally; stealth follow would add nothing then.
+                if (alreadyFollowing(user)) return@before
                 val id = userIdOf(user) ?: return@before
                 val bar = param.args[0] as? View
                 val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->

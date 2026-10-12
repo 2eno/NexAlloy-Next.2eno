@@ -58,6 +58,20 @@ val jsonParserFromStringMethods = findMethodListDirect {
 }
 
 /**
+ * Maps a user's friendship status to a `Map<String, Boolean>` with the keys "following", "followed_by",
+ * "blocking" and "incoming_request", like Piko's user friendship status decoder. Used to hide the stealth follow
+ * button when the user already follows the account normally.
+ */
+val friendshipStatusMapMethod = findMethodDirect {
+    findMethod {
+        matcher {
+            returnType = "java.util.Map"
+            usingStrings(listOf("blocking", "followed_by", "following", "incoming_request"), StringMatchType.Equals)
+        }
+    }.single { Modifier.isStatic(it.modifiers) }
+}
+
+/**
  * The request dispatcher of Instagram, so the patch can read the headers of the app's own API requests.
  */
 val tigonStartRequestMethods = findMethodListDirect {
