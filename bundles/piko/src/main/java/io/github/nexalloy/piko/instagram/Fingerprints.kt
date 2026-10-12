@@ -495,6 +495,39 @@ val profilePictureActionConstructor = findMethodDirect {
 }
 
 /**
+ * Shows the menu of a long pressed story highlight on a profile (Send to, Copy link, Show QR code, Share to, Report),
+ * built with the dialog builder of the module "HighlightsTrayDialogHelper".
+ */
+val highlightMenuMethod = findMethodDirect {
+    findMethodWithStrings(listOf("HighlightsTrayDialogHelper")) {
+        returnType = "void"
+    }.single()
+}
+
+/**
+ * The dialog builder created right after the module name of the highlight menu.
+ */
+val highlightMenuBuilderClass = findClassDirect {
+    val instructions = highlightMenuMethod().instructions
+    val moduleIndex = instructions.indexOfFirst { it.string == "HighlightsTrayDialogHelper" }
+    instructions.drop(moduleIndex + 1).first { it.opcodeEnum == Opcode.NEW_INSTANCE }.classRef!!
+}
+
+/**
+ * Adds an item to the highlight menu: `(String label, View.OnClickListener)`, the one the menu calls the most, as
+ * the builder has another method of this signature.
+ */
+val highlightMenuAddMethod = findMethodDirect {
+    val builder = highlightMenuBuilderClass().name
+    highlightMenuMethod().instructions.mapNotNull { it.methodRef }
+        .filter {
+            it.declaredClassName == builder && it.returnTypeName == "void" &&
+                it.paramTypeNames == listOf("java.lang.String", "android.view.View\$OnClickListener")
+        }
+        .groupBy { it.descriptor }.values.maxBy { it.size }.first()
+}
+
+/**
  * The carousel position of a post, the int field of the post state read by the getter of `EditMediaInfoFragment`
  * returning the current media, like Piko's decoder:
  * `iget-object state; if-eqz; iget position, state; ...; invoke-static (List, int)Media`.

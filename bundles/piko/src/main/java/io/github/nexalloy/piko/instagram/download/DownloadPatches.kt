@@ -42,6 +42,9 @@ import io.github.nexalloy.piko.instagram.igDialogCanceledOnTouchOutsideMethod
 import io.github.nexalloy.piko.instagram.igDialogMenuBottomCornersField
 import io.github.nexalloy.piko.instagram.igDialogNegativeButtonMethod
 import io.github.nexalloy.piko.instagram.igDialogTitleField
+import io.github.nexalloy.piko.instagram.highlightMenuAddMethod
+import io.github.nexalloy.piko.instagram.highlightMenuBuilderClass
+import io.github.nexalloy.piko.instagram.highlightMenuMethod
 import io.github.nexalloy.piko.instagram.mediaPositionField
 import io.github.nexalloy.piko.instagram.profilePictureActionConstructor
 import io.github.nexalloy.piko.instagram.profilePictureActionsMethod
@@ -64,6 +67,8 @@ private const val DOWNLOAD_OPTION = "NEXALLOY_DOWNLOAD"
 private const val DOWNLOAD_FOLDER = "Instagram"
 private const val DOWNLOAD_LABEL = "Download options"
 private const val PROFILE_PICTURE_LABEL = "Download"
+private const val HIGHLIGHT_COVER_LABEL = "Download highlight cover"
+private const val HIGHLIGHT_MENU_MODULE = "HighlightsTrayDialogHelper"
 
 /**
  * Logs what the download hooks do, so a missing download option can be traced in the logcat (tag NexAlloy).
@@ -320,7 +325,7 @@ val DownloadMedia = patch(
     fun highlightCoverOptions(activity: Activity, owners: List<Any?>): List<Pair<String, () -> Unit>> {
         val url = runCatching { highlightCover?.url(owners) }
             .onFailure { log("highlight cover failed: $it") }.getOrNull() ?: return emptyList()
-        return listOf("Download highlight cover" to { enqueue(activity, listOf(MediaExtractor.Item(url, false, url))) })
+        return listOf(HIGHLIGHT_COVER_LABEL to { enqueue(activity, listOf(MediaExtractor.Item(url, false, url))) })
     }
 
     fun downloadMedia(
@@ -564,6 +569,42 @@ val DownloadMedia = patch(
                 }
             }
         }
+    }
+
+    // The menu of a long pressed highlight on a profile. Like the sheet menus, the item is added to the dialog builder
+    // right after the menu creates it, so it is the first item.
+    menus["highlight menu"] = runCatching {
+        val addItem = ::highlightMenuAddMethod.method.apply { isAccessible = true }
+        val cover = highlightCover ?: throw Exception("Highlight cover not available")
+        val addCover: HookDsl<IScopedHookCallback>.() -> Unit = {
+            after { param ->
+                if (HIGHLIGHT_MENU_MODULE !in param.args) return@after
+                try {
+                    val helper = outerParam.thisObject
+                    val owners = listOf(helper) + outerParam.args
+                    val onClick = View.OnClickListener { view ->
+                        log("tapped in the highlight menu")
+                        try {
+                            val activity = helper?.let(::activityIn) ?: activityIn(view)
+                                ?: return@OnClickListener log("no activity for the highlight menu")
+                            val url = cover.url(owners)
+                                ?: return@OnClickListener toast(activity, "No highlight cover found")
+                            enqueue(activity, listOf(MediaExtractor.Item(url, false, url)))
+                        } catch (e: Exception) {
+                            log("highlight cover failed: ${e.stackTraceToString().take(1500)}")
+                            toast(view.context, "Download failed")
+                        }
+                    }
+                    addItem.invoke(param.thisObject, HIGHLIGHT_COVER_LABEL, onClick)
+                    log("added to the highlight menu")
+                } catch (e: Exception) {
+                    PatcherLog.error(e) { "Could not add the download option to the highlight menu" }
+                }
+            }
+        }
+        val builderConstructors =
+            ::highlightMenuBuilderClass.clazz.declaredConstructors.map { it to addCover }.toTypedArray()
+        ::highlightMenuMethod.method.hookMethod(scopedHook(*builderConstructors))
     }
 
     // The buttons below the expanded profile picture, a "Download" button is added after Instagram's.
