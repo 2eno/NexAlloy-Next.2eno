@@ -237,12 +237,33 @@ val StealthFollow = patch(
         }
     }
 
-    // The button below the expanded profile picture, after Follow, Share profile, Copy link and QR code.
+    // The button below the expanded profile picture, after Follow, Share profile, Copy link and QR code. Wrapped so
+    // a failure here still leaves the story tray injection working.
+    runCatching {
     val profileClass = classLoader.loadClass("com.instagram.profile.fragment.UserDetailFragment")
     val userClass = classLoader.loadClass("com.instagram.user.model.User")
-    val profileUser = profileClass.declaredMethods.single { it.parameterCount == 0 && it.returnType == userClass }
+    val profileUser = profileClass.declaredMethods.first { it.parameterCount == 0 && it.returnType == userClass }
         .apply { isAccessible = true }
-    val userId = userClass.getMethod("getId")
+
+    // The id getters of User are obfuscated and change between versions, so the user id is read as the value of the
+    // single no-argument String getter that is all digits, which only the numeric user id (pk) is.
+    val userIdGetters = userClass.methods
+        .filter { it.parameterCount == 0 && it.returnType == String::class.java }
+        .onEach { it.isAccessible = true }
+    val chosenUserIdGetter = java.util.concurrent.atomic.AtomicReference<Method>()
+    fun userIdOf(user: Any): String? {
+        fun read(getter: Method) = runCatching { getter.invoke(user) as? String }.getOrNull()
+        chosenUserIdGetter.get()?.let { return read(it) }
+        for (getter in userIdGetters) {
+            val value = read(getter)
+            if (value != null && value.length in 1..20 && value.all { it.isDigit() }) {
+                chosenUserIdGetter.set(getter)
+                return value
+            }
+        }
+        return null
+    }
+
     var resumedProfile = WeakReference<Any>(null)
     profileClass.getDeclaredMethod("onResume").hookMethod {
         after { param -> resumedProfile = WeakReference(param.thisObject) }
@@ -262,7 +283,7 @@ val StealthFollow = patch(
                 val profile = resumedProfile.get() ?: return@before
                 val actions = param.args[2] as? List<*> ?: return@before
                 val user = profileUser.invoke(profile) ?: return@before
-                val id = userId.invoke(user) as? String ?: return@before
+                val id = userIdOf(user) ?: return@before
                 val label = if (id in accounts) "Stealth unfollow" else "Stealth follow"
                 val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
                     when (method.name) {
@@ -294,6 +315,7 @@ val StealthFollow = patch(
             }
         }
     }
+    }.onFailure { PatcherLog.error(it) { "Could not set up the stealth follow button" } }
 
     refresh(force = true)
 }
