@@ -43,6 +43,8 @@ import io.github.nexalloy.piko.instagram.igDialogMenuBottomCornersField
 import io.github.nexalloy.piko.instagram.igDialogNegativeButtonMethod
 import io.github.nexalloy.piko.instagram.igDialogTitleField
 import io.github.nexalloy.piko.instagram.mediaPositionField
+import io.github.nexalloy.piko.instagram.profilePictureActionConstructor
+import io.github.nexalloy.piko.instagram.profilePictureActionsMethod
 import io.github.nexalloy.piko.instagram.videoVersionHeightGetter
 import io.github.nexalloy.piko.instagram.videoVersionWidthGetter
 import io.github.nexalloy.scopedHook
@@ -61,6 +63,7 @@ import java.util.concurrent.ConcurrentHashMap
 private const val DOWNLOAD_OPTION = "NEXALLOY_DOWNLOAD"
 private const val DOWNLOAD_FOLDER = "Instagram"
 private const val DOWNLOAD_LABEL = "Download options"
+private const val PROFILE_PICTURE_LABEL = "Download"
 
 /**
  * Logs what the download hooks do, so a missing download option can be traced in the logcat (tag NexAlloy).
@@ -220,7 +223,13 @@ private fun showVariants(
 /**
  * Shows Piko's download options for the item at [position], the item of a carousel on screen.
  */
-private fun download(dialog: InstagramDialog, activity: Activity, items: List<MediaExtractor.Item>, position: Int) {
+private fun download(
+    dialog: InstagramDialog,
+    activity: Activity,
+    items: List<MediaExtractor.Item>,
+    position: Int,
+    extraOptions: List<Pair<String, () -> Unit>>,
+) {
     if (items.isEmpty()) return toast(activity, "No media found")
     val current = items[position.takeIf { it in items.indices } ?: 0]
     val options = mutableListOf<Pair<String, () -> Unit>>()
@@ -243,6 +252,7 @@ private fun download(dialog: InstagramDialog, activity: Activity, items: List<Me
         options += "Open image externally" to { openExternally(activity, current.url, isVideo = false) }
     }
     if (items.size > 1) options += "Download all" to { enqueue(activity, items) }
+    options += extraOptions
     dialog.show(activity, "Download options", options)
 }
 
@@ -263,7 +273,7 @@ private fun activityIn(owner: Any): Activity? {
 
 val DownloadMedia = patch(
     name = "Download media",
-    description = "Adds download options to the menus of posts, reels and stories. Files are saved to Download/Instagram.",
+    description = "Adds download options to the menus of posts, reels and stories, and to profile pictures. Files are saved to Download/Instagram.",
 ) {
     val mediaClass = classLoader.loadClass(MEDIA_CLASS)
     fun <T> optional(name: String, find: () -> T) =
@@ -302,7 +312,23 @@ val DownloadMedia = patch(
     }
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
 
-    fun downloadMedia(activity: Activity, media: Any?, owners: List<Any?> = emptyList()) {
+    val highlightCover = optional("Highlight cover") { HighlightCover(classLoader, ::log) }
+
+    /**
+     * The option to download the cover of the highlight reachable from [owners], when a highlight is shown.
+     */
+    fun highlightCoverOptions(activity: Activity, owners: List<Any?>): List<Pair<String, () -> Unit>> {
+        val url = runCatching { highlightCover?.url(owners) }
+            .onFailure { log("highlight cover failed: $it") }.getOrNull() ?: return emptyList()
+        return listOf("Download highlight cover" to { enqueue(activity, listOf(MediaExtractor.Item(url, false, url))) })
+    }
+
+    fun downloadMedia(
+        activity: Activity,
+        media: Any?,
+        owners: List<Any?> = emptyList(),
+        storyOwners: List<Any?> = emptyList(),
+    ) {
         try {
             if (media == null) {
                 log("no media to download")
@@ -311,7 +337,7 @@ val DownloadMedia = patch(
             val items = extractor.items(media)
             val position = if (items.size > 1) position(owners) else 0
             log("${items.size} items, at $position")
-            download(dialog, activity, items, position)
+            download(dialog, activity, items, position, highlightCoverOptions(activity, storyOwners))
         } catch (e: Exception) {
             PatcherLog.error(e) { "Could not download the media" }
             log("failed: ${e.stackTraceToString().take(1500)}")
@@ -476,7 +502,7 @@ val DownloadMedia = patch(
                     log("tapped in the story menu")
                     val helper = param.args.first { helperClass.isInstance(it) }
                     val activity = activityField.get(helper) as Activity? ?: return@before log("no story activity")
-                    downloadMedia(activity, storyMedia(reelItemField.get(helper)))
+                    downloadMedia(activity, storyMedia(reelItemField.get(helper)), storyOwners = listOf(helper))
                 }
             }
         }
@@ -514,12 +540,13 @@ val DownloadMedia = patch(
                     if (hasDownload) return@before
                     val activity = viewer.javaClass.getMethod("getActivity").invoke(viewer) as Activity?
                         ?: return@before log("no activity for the story menu rows")
-                    val media = storyMedia(currentItem.invoke(viewer))
+                    val reelItem = currentItem.invoke(viewer)
+                    val media = storyMedia(reelItem)
                     val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
                         when (method.name) {
                             "invoke" -> {
                                 log("tapped in the story menu rows")
-                                downloadMedia(activity, media)
+                                downloadMedia(activity, media, storyOwners = listOf(viewer, reelItem))
                                 Unit
                             }
                             "equals" -> proxy === args?.firstOrNull()
@@ -534,6 +561,65 @@ val DownloadMedia = patch(
                     log("added to the story menu rows")
                 } catch (e: Exception) {
                     PatcherLog.error(e) { "Could not add the download row to the story menu" }
+                }
+            }
+        }
+    }
+
+    // The buttons below the expanded profile picture, a "Download" button is added after Instagram's.
+    menus["profile picture"] = runCatching {
+        val actionConstructor = ::profilePictureActionConstructor.constructor.apply { isAccessible = true }
+        val function0 = actionConstructor.parameterTypes[1]
+        val imageViewClass = classLoader.loadClass("com.instagram.common.ui.widget.imageview.IgImageView")
+        val imageUrl = imageViewClass.getMethod("getUrlForViewTrackers")
+        val pictureId = appContext.resources.getIdentifier("expanded_profile_pic", "id", appContext.packageName)
+        val pictureIcon = appContext.resources.getIdentifier(
+            "instagram_download_pano_outline_24", "drawable", appContext.packageName,
+        ).takeIf { it != 0 } ?: icon
+
+        /**
+         * The URL of the profile picture shown in the screen of [bar].
+         */
+        fun pictureUrl(bar: View): String? {
+            val picture = bar.rootView.findViewById<View>(pictureId)?.takeIf(imageViewClass::isInstance)
+                ?: return null.also { log("no profile picture view") }
+            val url = imageUrl.invoke(picture) ?: return null
+            return url.javaClass.getMethod("getUrl").invoke(url) as String?
+        }
+
+        ::profilePictureActionsMethod.hookMethod {
+            before { param ->
+                val bar = param.args[0] as? View ?: return@before
+                val actions = param.args[2] as? List<*> ?: return@before
+                try {
+                    val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
+                        when (method.name) {
+                            "invoke" -> {
+                                log("tapped below the profile picture")
+                                try {
+                                    val activity = activityIn(bar)
+                                    val url = pictureUrl(bar)
+                                    when {
+                                        activity == null -> log("no activity for the profile picture")
+                                        url == null -> toast(activity, "No profile picture found")
+                                        else -> enqueue(activity, listOf(MediaExtractor.Item(url, false, url)))
+                                    }
+                                } catch (e: Exception) {
+                                    log("profile picture failed: ${e.stackTraceToString().take(1500)}")
+                                    toast(bar.context, "Download failed")
+                                }
+                                Unit
+                            }
+                            "equals" -> proxy === args?.firstOrNull()
+                            "hashCode" -> System.identityHashCode(proxy)
+                            else -> "Download profile picture"
+                        }
+                    }
+                    val download = actionConstructor.newInstance(PROFILE_PICTURE_LABEL, onClick, pictureIcon, false)
+                    param.args[2] = actions + download
+                    log("added below the profile picture")
+                } catch (e: Exception) {
+                    PatcherLog.error(e) { "Could not add the download button below the profile picture" }
                 }
             }
         }
