@@ -72,6 +72,22 @@ val friendshipStatusMapMethod = findMethodDirect {
 }
 
 /**
+ * Whether a user is private, the no-argument `Boolean` getter of `User` reading the "is_private" column of the live
+ * tree. It is found by the hash of that column (`"is_private".hashCode()`), so the obfuscated name does not matter.
+ * Used to show the stealth follow button only for public accounts, whose stories can be fetched.
+ */
+val userIsPrivateMethod = findMethodDirect {
+    findMethod {
+        matcher {
+            declaredClass("com.instagram.user.model.User")
+            returnType = "java.lang.Boolean"
+            paramCount = 0
+            usingNumbers(1185812334)
+        }
+    }.single()
+}
+
+/**
  * The request dispatcher of Instagram, so the patch can read the headers of the app's own API requests.
  */
 val tigonStartRequestMethods = findMethodListDirect {

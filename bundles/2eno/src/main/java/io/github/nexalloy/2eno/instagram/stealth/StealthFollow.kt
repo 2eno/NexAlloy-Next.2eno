@@ -19,6 +19,7 @@ import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
 import io.github.nexalloy.`2eno`.instagram.tigonStartRequestMethods
+import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import org.json.JSONObject
 import java.lang.ref.WeakReference
 import java.lang.reflect.Field
@@ -310,6 +311,16 @@ val StealthFollow = patch(
         return false
     }
 
+    // Whether a profile is public. Stealth follow only works for public accounts, so the button is shown only for
+    // those. When the private flag cannot be read, the account is treated as public rather than hiding the button.
+    val isPrivateMethod = runCatching { ::userIsPrivateMethod.method.apply { isAccessible = true } }
+        .onFailure { PatcherLog.error(it) { "User is-private method not found" } }.getOrNull()
+    fun isPublic(user: Any): Boolean {
+        val method = isPrivateMethod ?: return true
+        val private = runCatching { method.invoke(user) as? Boolean }.getOrNull()
+        return private == false
+    }
+
     var resumedProfile = WeakReference<Any>(null)
     profileClass.getDeclaredMethod("onResume").hookMethod {
         after { param -> resumedProfile = WeakReference(param.thisObject) }
@@ -333,6 +344,8 @@ val StealthFollow = patch(
                 val profile = resumedProfile.get() ?: return@before
                 val actions = param.args[2] as? List<*> ?: return@before
                 val user = profileUser.invoke(profile) ?: return@before
+                // Only public accounts, whose stories can be fetched without following.
+                if (!isPublic(user)) return@before
                 // Hidden when the account is already followed normally; stealth follow would add nothing then.
                 if (alreadyFollowing(user)) return@before
                 val id = userIdOf(user) ?: return@before
