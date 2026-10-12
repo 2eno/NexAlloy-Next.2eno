@@ -5,6 +5,9 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.TextView
 import android.widget.Toast
 import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.hookMethod
@@ -39,7 +42,32 @@ private const val BATCH_SIZE = 20
 /** Headers of Instagram's requests that are not copied to the requests of the patch. */
 private val SKIPPED_HEADERS = setOf("host", "content-length", "content-type", "accept-encoding", "connection")
 
+private const val FOLLOW_LABEL = "Stealth follow"
+private const val FOLLOW_UNFOLLOW_LABEL = "Stealth unfollow"
+
 private fun log(message: String) = Log.i("NexAlloy", "Stealth follow: $message").let { }
+
+/**
+ * Updates the stealth follow button shown in [bar] to [label] and [icon], so a tap changes it at once instead of
+ * only on the next time the profile picture is opened. The row of the button is the one whose label is one of the
+ * stealth labels.
+ */
+private fun updateStealthButton(bar: View, label: String, icon: Int) {
+    fun forEachView(view: View, action: (View) -> Unit) {
+        action(view)
+        if (view is ViewGroup) for (i in 0 until view.childCount) forEachView(view.getChildAt(i), action)
+    }
+    forEachView(bar) { view ->
+        if (view is TextView && view.text?.toString() in setOf(FOLLOW_LABEL, FOLLOW_UNFOLLOW_LABEL)) {
+            view.text = label
+            (view.parent as? ViewGroup)?.let { row ->
+                for (i in 0 until row.childCount) {
+                    (row.getChildAt(i) as? ImageView)?.let { if (icon != 0) it.setImageResource(icon) }
+                }
+            }
+        }
+    }
+}
 
 /**
  * The public accounts followed only on this device, by user ID. Nothing is sent to Instagram, so these accounts do
@@ -274,9 +302,13 @@ val StealthFollow = patch(
 
     val actionConstructor = ::profilePictureActionConstructor.constructor.apply { isAccessible = true }
     val function0 = actionConstructor.parameterTypes[1]
-    val icon = appContext.resources.getIdentifier(
-        "instagram_eye_off_pano_outline_24", "drawable", appContext.packageName,
-    )
+    fun drawable(name: String) = appContext.resources.getIdentifier(name, "drawable", appContext.packageName)
+    // Following shows the crossed-out eye ("unfollow"), not following the open eye ("follow").
+    val iconFollow = drawable("instagram_eye_pano_outline_24")
+    val iconUnfollow = drawable("instagram_eye_off_pano_outline_24")
+    fun label(following: Boolean) = if (following) FOLLOW_UNFOLLOW_LABEL else FOLLOW_LABEL
+    fun iconOf(following: Boolean) = if (following) iconUnfollow else iconFollow
+
     ::profilePictureActionsMethod.hookMethod {
         before { param ->
             try {
@@ -284,13 +316,15 @@ val StealthFollow = patch(
                 val actions = param.args[2] as? List<*> ?: return@before
                 val user = profileUser.invoke(profile) ?: return@before
                 val id = userIdOf(user) ?: return@before
-                val label = if (id in accounts) "Stealth unfollow" else "Stealth follow"
+                val bar = param.args[0] as? View
                 val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
                     when (method.name) {
                         "invoke" -> {
                             try {
                                 val followed = accounts.toggle(id)
                                 log("${if (followed) "followed" else "unfollowed"} $id")
+                                // Change the button's own icon and label at once, so the tap is visible.
+                                bar?.let { updateStealthButton(it, label(followed), iconOf(followed)) }
                                 if (followed) {
                                     toast("Stealth following. Refresh your feed to see their stories.")
                                     refresh(force = true)
@@ -305,11 +339,13 @@ val StealthFollow = patch(
                         }
                         "equals" -> proxy === args?.firstOrNull()
                         "hashCode" -> System.identityHashCode(proxy)
-                        else -> label
+                        else -> label(id in accounts)
                     }
                 }
+                val following = id in accounts
                 @Suppress("UNCHECKED_CAST")
-                param.args[2] = (actions as List<Any?>) + actionConstructor.newInstance(label, onClick, icon, false)
+                param.args[2] = (actions as List<Any?>) +
+                    actionConstructor.newInstance(label(following), onClick, iconOf(following), false)
             } catch (e: Exception) {
                 PatcherLog.error(e) { "Could not add the stealth follow button" }
             }
