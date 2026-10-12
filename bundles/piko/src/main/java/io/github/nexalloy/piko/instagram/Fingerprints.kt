@@ -362,6 +362,29 @@ val overflowMenuOptionClickMethod = findMethodDirect {
 }
 
 /**
+ * The getter of a media value by its JSON key. Instagram 447 keeps many posts in a native live tree instead of the
+ * fields of `Media`, and these getters read either.
+ */
+private fun DexKitBridge.mediaGetter(key: String, returnType: String) =
+    findMethodWithStrings(listOf(key)) {
+        declaredClass(MEDIA_CLASS)
+        paramCount = 0
+        this.returnType = returnType
+    }.single()
+
+val mediaImageInfoGetter = findMethodDirect {
+    mediaGetter("image_versions2", "com.instagram.model.mediasize.ImageInfo")
+}
+
+val mediaVideoVersionsGetter = findMethodDirect {
+    mediaGetter("video_versions", "java.util.List")
+}
+
+val mediaCarouselGetter = findMethodDirect {
+    mediaGetter("carousel_media", "java.util.List")
+}
+
+/**
  * Module names of the bottom sheets showing the menu of a post: the reels menu, also used for posts shown like
  * reels, and the simplified menu of the "≡" button of posts in the home feed.
  */

@@ -21,6 +21,9 @@ import io.github.nexalloy.piko.instagram.overflowMenuCreatorClass
 import io.github.nexalloy.piko.instagram.overflowMenuOptionClickMethod
 import io.github.nexalloy.piko.instagram.overflowMenuOptionsMethod
 import io.github.nexalloy.piko.instagram.SHEET_MENU_MODULES
+import io.github.nexalloy.piko.instagram.mediaCarouselGetter
+import io.github.nexalloy.piko.instagram.mediaImageInfoGetter
+import io.github.nexalloy.piko.instagram.mediaVideoVersionsGetter
 import io.github.nexalloy.piko.instagram.sheetMenuBuilderClass
 import io.github.nexalloy.piko.instagram.sheetMenuMethods
 import io.github.nexalloy.piko.instagram.storyMenuLabelsMethod
@@ -133,7 +136,15 @@ val DownloadMedia = patch(
     description = "Adds a download option to the menus of posts, reels and stories. Files are saved to Download/Instagram.",
 ) {
     val mediaClass = classLoader.loadClass(MEDIA_CLASS)
-    val extractor = MediaExtractor(classLoader)
+    fun getter(find: () -> java.lang.reflect.Method) =
+        runCatching(find).onFailure { PatcherLog.error(it) { "Media getter not found" } }.getOrNull()
+    val extractor = MediaExtractor(
+        classLoader,
+        getter { ::mediaImageInfoGetter.method },
+        getter { ::mediaVideoVersionsGetter.method },
+        getter { ::mediaCarouselGetter.method },
+        ::log,
+    )
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
 
     fun downloadMedia(activity: Activity, media: Any?) {
@@ -147,6 +158,7 @@ val DownloadMedia = patch(
             download(activity, items)
         } catch (e: Exception) {
             PatcherLog.error(e) { "Could not download the media" }
+            log("failed: ${e.stackTraceToString().take(1500)}")
             toast(activity, "Download failed")
         }
     }
