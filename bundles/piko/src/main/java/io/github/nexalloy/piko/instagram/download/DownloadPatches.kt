@@ -1,12 +1,19 @@
 package io.github.nexalloy.piko.instagram.download
 
 import android.app.Activity
-import android.app.AlertDialog
-import android.app.DownloadManager
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -29,18 +36,31 @@ import io.github.nexalloy.piko.instagram.sheetMenuMethods
 import io.github.nexalloy.piko.instagram.storyMenuLabelsMethod
 import io.github.nexalloy.piko.instagram.storyMenuRowConstructor
 import io.github.nexalloy.piko.instagram.storyMenuSheetMethod
+import io.github.nexalloy.piko.instagram.igDialogBuildMethod
+import io.github.nexalloy.piko.instagram.igDialogCancelableMethod
+import io.github.nexalloy.piko.instagram.igDialogCanceledOnTouchOutsideMethod
+import io.github.nexalloy.piko.instagram.igDialogMenuBottomCornersField
+import io.github.nexalloy.piko.instagram.igDialogNegativeButtonMethod
+import io.github.nexalloy.piko.instagram.igDialogTitleField
+import io.github.nexalloy.piko.instagram.mediaPositionField
+import io.github.nexalloy.piko.instagram.videoVersionHeightGetter
+import io.github.nexalloy.piko.instagram.videoVersionWidthGetter
 import io.github.nexalloy.scopedHook
+import java.io.File
+import java.io.IOException
 import java.lang.reflect.Field
 import java.lang.ref.WeakReference
 import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 private const val DOWNLOAD_OPTION = "NEXALLOY_DOWNLOAD"
 private const val DOWNLOAD_FOLDER = "Instagram"
-private const val DOWNLOAD_LABEL = "Download"
+private const val DOWNLOAD_LABEL = "Download options"
 
 /**
  * Logs what the download hooks do, so a missing download option can be traced in the logcat (tag NexAlloy).
@@ -82,55 +102,148 @@ private fun captured(owner: Any, type: Class<*>): Any? =
 
 private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 
-private fun enqueue(context: Context, items: List<MediaExtractor.Item>) {
-    val downloads = context.getSystemService(DownloadManager::class.java)
-    items.forEach { item ->
-        val uri = Uri.parse(item.url)
-        val extension = if (item.isVideo) ".mp4" else ".jpg"
-        val name = uri.lastPathSegment?.takeIf { it.contains('.') }
-            ?: "instagram_${System.currentTimeMillis()}$extension"
-        downloads.enqueue(
-            DownloadManager.Request(uri)
-                .setTitle(name)
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "$DOWNLOAD_FOLDER/$name")
-        )
+private val mainHandler = Handler(Looper.getMainLooper())
+
+/**
+ * The file name of [item], the last path segment of its URL or a new name.
+ */
+private fun fileName(item: MediaExtractor.Item): String {
+    val extension = if (item.isVideo) ".mp4" else ".jpg"
+    val name = Uri.parse(item.url).lastPathSegment?.takeIf { it.contains('.') }
+        ?: "instagram_${System.currentTimeMillis()}$extension"
+    // A cover image keeps the name of its video file otherwise.
+    return if (!item.isVideo && !name.endsWith(".jpg") && !name.endsWith(".webp") && !name.endsWith(".heic")) "$name.jpg"
+    else name
+}
+
+/**
+ * Saves the file of [item] to Download/Instagram. Like Piko, the file is fetched by the app itself, as not every
+ * device has the download manager.
+ */
+private fun save(context: Context, item: MediaExtractor.Item) {
+    val name = fileName(item)
+    val mimeType = if (item.isVideo) "video/mp4" else if (name.endsWith(".webp")) "image/webp" else "image/jpeg"
+    val connection = URL(item.url).openConnection() as HttpURLConnection
+    try {
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
+        if (connection.responseCode !in 200..299) throw IOException("HTTP ${connection.responseCode}")
+        connection.inputStream.use { input ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IOException("MediaStore did not create $name")
+                try {
+                    resolver.openOutputStream(uri)!!.use { output -> input.copyTo(output) }
+                    resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                } catch (e: Exception) {
+                    resolver.delete(uri, null, null)
+                    throw e
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val folder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), DOWNLOAD_FOLDER)
+                folder.mkdirs()
+                File(folder, name).outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+    } finally {
+        connection.disconnect()
     }
+    log("saved $name")
+}
+
+private fun enqueue(context: Context, items: List<MediaExtractor.Item>) {
+    val appContext = context.applicationContext ?: context
     toast(context, if (items.size == 1) "Downloading" else "Downloading ${items.size} items")
+    Thread {
+        var saved = 0
+        items.forEach { item ->
+            try {
+                save(appContext, item)
+                saved++
+            } catch (e: Exception) {
+                log("failed to save ${item.url}: ${e.stackTraceToString().take(1500)}")
+            }
+        }
+        val text = when {
+            saved == items.size -> "Saved to Download/$DOWNLOAD_FOLDER"
+            saved == 0 -> "Download failed"
+            else -> "Saved $saved of ${items.size} to Download/$DOWNLOAD_FOLDER"
+        }
+        mainHandler.post { toast(appContext, text) }
+    }.apply { name = "NexAlloy download" }.start()
 }
 
 /**
  * The photo of [item], the cover image when it is a video.
  */
-private fun asImage(item: MediaExtractor.Item) = item.imageUrl?.let { MediaExtractor.Item(it, isVideo = false, imageUrl = it) }
+private fun asImage(item: MediaExtractor.Item) = item.imageUrl?.let {
+    MediaExtractor.Item(it, isVideo = false, imageUrl = it, item.imageVariants)
+}
+
+private fun copyLink(context: Context, url: String) {
+    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Media link", url))
+    toast(context, "Copied media link")
+}
+
+private fun openExternally(activity: Activity, url: String, isVideo: Boolean) {
+    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(url), if (isVideo) "video/*" else "image/*")
+    try {
+        activity.startActivity(Intent.createChooser(intent, null))
+    } catch (e: ActivityNotFoundException) {
+        toast(activity, "No app found to open the media")
+    }
+}
 
 /**
- * Downloads [items]. Videos can also be downloaded as image, their cover image, and the items of a carousel can be
- * chosen.
+ * Shows the sizes of a photo or video to download one of them.
  */
-private fun download(activity: Activity, items: List<MediaExtractor.Item>) {
-    if (items.isEmpty()) return toast(activity, "No media found")
-    val hasVideo = items.any { it.isVideo && it.imageUrl != null }
-    if (items.size == 1 && !hasVideo) return enqueue(activity, items)
+private fun showVariants(
+    dialog: InstagramDialog,
+    activity: Activity,
+    title: String,
+    variants: List<MediaExtractor.Variant>,
+    isVideo: Boolean,
+) = dialog.show(activity, title, variants.map { variant ->
+    variant.label to {
+        enqueue(activity, listOf(MediaExtractor.Item(variant.url, isVideo, imageUrl = variant.url.takeIf { !isVideo })))
+    }
+})
 
-    val choices = mutableListOf<Pair<String, () -> Unit>>()
-    if (items.size == 1) {
-        choices += "Video" to { enqueue(activity, items) }
-        choices += "Download as image" to { enqueue(activity, items.mapNotNull(::asImage)) }
-    } else {
-        choices += "All (${items.size})" to { enqueue(activity, items) }
-        if (hasVideo) choices += "All as images" to { enqueue(activity, items.mapNotNull(::asImage)) }
-        items.forEachIndexed { index, item ->
-            choices += "${index + 1}. ${if (item.isVideo) "Video" else "Photo"}" to { enqueue(activity, listOf(item)) }
-            if (item.isVideo && item.imageUrl != null) {
-                choices += "${index + 1}. Video as image" to { enqueue(activity, listOfNotNull(asImage(item))) }
-            }
+/**
+ * Shows Piko's download options for the item at [position], the item of a carousel on screen.
+ */
+private fun download(dialog: InstagramDialog, activity: Activity, items: List<MediaExtractor.Item>, position: Int) {
+    if (items.isEmpty()) return toast(activity, "No media found")
+    val current = items[position.takeIf { it in items.indices } ?: 0]
+    val options = mutableListOf<Pair<String, () -> Unit>>()
+    options += "Download current media" to { enqueue(activity, listOf(current)) }
+    asImage(current)?.let { image -> options += "Download as image" to { enqueue(activity, listOf(image)) } }
+    options += "Copy media link" to { copyLink(activity, current.url) }
+    if (current.imageVariants.isNotEmpty()) {
+        options += "Image variants" to {
+            showVariants(dialog, activity, "Image variants", current.imageVariants, isVideo = false)
         }
     }
-    AlertDialog.Builder(activity)
-        .setTitle("Download")
-        .setItems(choices.map { it.first }.toTypedArray()) { _, which -> choices[which].second() }
-        .show()
+    if (current.isVideo) {
+        if (current.videoVariants.isNotEmpty()) {
+            options += "Video variants" to {
+                showVariants(dialog, activity, "Video variants", current.videoVariants, isVideo = true)
+            }
+        }
+        options += "Open video externally" to { openExternally(activity, current.url, isVideo = true) }
+    } else {
+        options += "Open image externally" to { openExternally(activity, current.url, isVideo = false) }
+    }
+    if (items.size > 1) options += "Download all" to { enqueue(activity, items) }
+    dialog.show(activity, "Download options", options)
 }
 
 /**
@@ -150,29 +263,55 @@ private fun activityIn(owner: Any): Activity? {
 
 val DownloadMedia = patch(
     name = "Download media",
-    description = "Adds a download option to the menus of posts, reels and stories. Files are saved to Download/Instagram.",
+    description = "Adds download options to the menus of posts, reels and stories. Files are saved to Download/Instagram.",
 ) {
     val mediaClass = classLoader.loadClass(MEDIA_CLASS)
-    fun getter(find: () -> java.lang.reflect.Method) =
-        runCatching(find).onFailure { PatcherLog.error(it) { "Media getter not found" } }.getOrNull()
+    fun <T> optional(name: String, find: () -> T) =
+        runCatching(find).onFailure { PatcherLog.error(it) { "$name not found" } }.getOrNull()
     val extractor = MediaExtractor(
         classLoader,
-        getter { ::mediaImageInfoGetter.method },
-        getter { ::mediaVideoVersionsGetter.method },
-        getter { ::mediaCarouselGetter.method },
+        optional("Media image getter") { ::mediaImageInfoGetter.method },
+        optional("Media video getter") { ::mediaVideoVersionsGetter.method },
+        optional("Media carousel getter") { ::mediaCarouselGetter.method },
+        optional("Video width getter") { ::videoVersionWidthGetter.method },
+        optional("Video height getter") { ::videoVersionHeightGetter.method },
         ::log,
     )
+    val dialog = InstagramDialog(
+        optional("Dialog builder") { ::igDialogBuildMethod.method },
+        optional("Dialog title") { ::igDialogTitleField.field },
+        optional("Dialog cancelable") { ::igDialogCancelableMethod.method },
+        optional("Dialog canceled on touch outside") { ::igDialogCanceledOnTouchOutsideMethod.method },
+        optional("Dialog negative button") { ::igDialogNegativeButtonMethod.method },
+        optional("Dialog menu corners") { ::igDialogMenuBottomCornersField.field },
+        ::log,
+    )
+    val positionField = optional("Carousel position") { ::mediaPositionField.field.apply { isAccessible = true } }
+
+    /**
+     * The carousel position of the post state among [owners] or captured by them, read when the option is tapped so
+     * it is the item on screen.
+     */
+    fun position(owners: List<Any?>): Int {
+        val field = positionField ?: return 0
+        val candidates = owners.filterNotNull()
+        val state = candidates.firstOrNull { field.declaringClass.isInstance(it) }
+            ?: candidates.firstNotNullOfOrNull { captured(it, field.declaringClass) }
+            ?: return 0.also { log("no carousel position") }
+        return field.getInt(state)
+    }
     val icon = appContext.resources.getIdentifier("instagram_download_outline_24", "drawable", appContext.packageName)
 
-    fun downloadMedia(activity: Activity, media: Any?) {
+    fun downloadMedia(activity: Activity, media: Any?, owners: List<Any?> = emptyList()) {
         try {
             if (media == null) {
                 log("no media to download")
                 return toast(activity, "No media found")
             }
             val items = extractor.items(media)
-            log("downloading ${items.size} items")
-            download(activity, items)
+            val position = if (items.size > 1) position(owners) else 0
+            log("${items.size} items, at $position")
+            download(dialog, activity, items, position)
         } catch (e: Exception) {
             PatcherLog.error(e) { "Could not download the media" }
             log("failed: ${e.stackTraceToString().take(1500)}")
@@ -232,7 +371,7 @@ val DownloadMedia = patch(
                             method.parameterTypes.contentEquals(arrayOf(helper.javaClass))
                     }.apply { isAccessible = true }.invoke(null, helper)
                 }.onFailure { PatcherLog.error(it) { "Could not read the post of the menu" } }.getOrNull()
-                downloadMedia(activity, media)
+                downloadMedia(activity, media, listOf(helper))
             }
         }
     }
@@ -266,7 +405,7 @@ val DownloadMedia = patch(
                         ?: return@after log("no activity for $module")
                     val onClick = View.OnClickListener {
                         log("tapped in $module")
-                        downloadMedia(activity, media)
+                        downloadMedia(activity, media, owners)
                     }
                     addItem.invoke(param.thisObject, activity, onClick, DOWNLOAD_LABEL, icon, false)
                     log("added to $module")

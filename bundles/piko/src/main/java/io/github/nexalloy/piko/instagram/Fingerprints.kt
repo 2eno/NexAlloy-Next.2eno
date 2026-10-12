@@ -461,6 +461,121 @@ val storyMenuRowConstructor = findMethodDirect {
     }.single()
 }
 
+/**
+ * The carousel position of a post, the int field of the post state read by the getter of `EditMediaInfoFragment`
+ * returning the current media, like Piko's decoder:
+ * `iget-object state; if-eqz; iget position, state; ...; invoke-static (List, int)Media`.
+ */
+val mediaPositionField = findFieldDirect {
+    fun MethodData.positionField(): FieldData? {
+        val instructions = instructions.take(10)
+        if (instructions.size < 10 || instructions[1].opcodeEnum != Opcode.IF_EQZ) return null
+        val state = instructions[0].takeIf { it.opcodeEnum == Opcode.IGET_OBJECT }?.fieldRef ?: return null
+        val position = instructions[2].takeIf { it.opcodeEnum == Opcode.IGET }?.fieldRef ?: return null
+        val media = instructions[9].takeIf { it.opcodeEnum == Opcode.INVOKE_STATIC }?.methodRef ?: return null
+        if (position.declaredClassName != state.typeName || position.typeName != "int") return null
+        if (media.paramTypeNames != listOf("java.util.List", "int") || media.returnTypeName != MEDIA_CLASS) return null
+        return position
+    }
+    findMethod {
+        matcher {
+            declaredClass("instagram.features.creation.fragment.EditMediaInfoFragment")
+            returnType = "java.lang.String"
+        }
+    }.mapNotNull { it.positionField() }.distinctBy { it.descriptor }.single()
+}
+
+private const val VIDEO_VERSION_CLASS = "com.instagram.api.schemas.VideoVersionIntf"
+
+/**
+ * The getter of a value of a video version, called right after its key in the method mapping a video version to
+ * JSON, like Piko's video data decoder.
+ */
+private fun DexKitBridge.videoVersionGetter(key: String): MethodData {
+    val mapper = findMethodWithStrings(listOf("fallback", "height", "type", "url", "url_expiration_timestamp_us", "width")) {
+        returnType = "java.util.Map"
+        paramTypes(VIDEO_VERSION_CLASS)
+    }.single { it.isStatic }
+    val instructions = mapper.instructions
+    val keyIndex = instructions.indexOfFirst { it.string == key }
+    return instructions[keyIndex + 1].methodRef!!.also {
+        require(it.declaredClassName == VIDEO_VERSION_CLASS && it.paramTypeNames.isEmpty())
+    }
+}
+
+val videoVersionWidthGetter = findMethodDirect { videoVersionGetter("width") }
+
+val videoVersionHeightGetter = findMethodDirect { videoVersionGetter("height") }
+
+/**
+ * Builds the dialog of Instagram's dialog builder, the native dialog Piko shows its download options in.
+ */
+val igDialogBuildMethod = findMethodDirect {
+    findMethodWithStrings(listOf("DialogBuilder - Activity is finishing")) {
+        returnType = "android.app.Dialog"
+    }.single()
+}
+
+/**
+ * Shows a dialog of React Native with the dialog builder, the calls of its options name the builder methods.
+ */
+private fun DexKitBridge.igDialogHelperMethod() = findMethod {
+    matcher {
+        declaredClass("com.instagram.react.modules.base.IgReactDialogModule")
+        name = "showDialogHelper"
+    }
+}.single()
+
+/**
+ * The builder method called after the option [key] is read.
+ */
+private fun DexKitBridge.igDialogOptionMethod(key: String): MethodData {
+    val builder = igDialogBuildMethod().declaredClassName
+    val instructions = igDialogHelperMethod().instructions
+    val keyIndex = instructions.indexOfFirst { it.string == key }
+    require(keyIndex >= 0) { "$key not found" }
+    return instructions.drop(keyIndex + 1).first {
+        it.opcodeEnum == Opcode.INVOKE_VIRTUAL && it.methodRef?.declaredClassName == builder
+    }.methodRef!!
+}
+
+val igDialogCancelableMethod = findMethodDirect { igDialogOptionMethod("IS_CANCELABLE") }
+
+val igDialogCanceledOnTouchOutsideMethod = findMethodDirect { igDialogOptionMethod("CANCELED_ON_TOUCH_OUTSIDE") }
+
+val igDialogNegativeButtonMethod = findMethodDirect { igDialogOptionMethod("NEGATIVE_BUTTON_TEXT") }
+
+/**
+ * The title of the dialog builder, the first builder field set by the React Native dialog.
+ */
+val igDialogTitleField = findFieldDirect {
+    val builder = igDialogBuildMethod().declaredClassName
+    igDialogHelperMethod().instructions.first {
+        it.opcodeEnum == Opcode.IPUT_OBJECT && it.fieldRef?.declaredClassName == builder
+    }.fieldRef!!
+}
+
+/**
+ * The flag rounding the bottom corners of the menu of a dialog. The builder rounds the last menu row even when
+ * buttons follow it, so like Piko it is cleared. It is set right after the flag of the top corners:
+ * `const/4 v, 1; iput-boolean v, adapter, top; iput-boolean v, adapter, bottom`.
+ */
+val igDialogMenuBottomCornersField = findFieldDirect {
+    val buildMethod = igDialogBuildMethod()
+    buildMethod.instructions.windowed(3).single { (constant, top, bottom) ->
+        val topField = top.fieldRef
+        val bottomField = bottom.fieldRef
+        constant.opcodeEnum == Opcode.CONST_4 && constant.literal == 1L &&
+            top.opcodeEnum == Opcode.IPUT_BOOLEAN && bottom.opcodeEnum == Opcode.IPUT_BOOLEAN &&
+            topField != null && bottomField != null &&
+            top.registerCount == 2 && bottom.registerCount == 2 &&
+            top.register(0) == constant.register(0) && bottom.register(0) == top.register(0) &&
+            bottom.register(1) == top.register(1) &&
+            topField.declaredClassName == bottomField.declaredClassName &&
+            topField.declaredClassName != buildMethod.declaredClassName && topField.name != bottomField.name
+    }[2].fieldRef!!
+}
+
 // endregion
 
 // region Misc
