@@ -40,7 +40,10 @@ internal class MediaExtractor(
         log,
     )
 
-    class Item(val url: String, val isVideo: Boolean)
+    /**
+     * A photo or video, [imageUrl] is the photo or the cover image of the video.
+     */
+    class Item(val url: String, val isVideo: Boolean, val imageUrl: String?)
 
     /**
      * The items of [media], one for each item of a carousel.
@@ -61,15 +64,15 @@ internal class MediaExtractor(
                 list.firstOrNull()?.let(videoVersionClass::isInstance) == true
             }
         val video = versions?.firstNotNullOfOrNull { version -> version?.let { invoke(it, "getUrl") as? String } }
-        if (video != null) return Item(video, isVideo = true)
 
         val imageInfo = get(imageInfoGetter, media)
             ?: mediaData(media).let { data ->
                 fields(data.javaClass).firstOrNull { imageInfoClass.isAssignableFrom(it.type) }?.get(data)
             }
         val image = imageInfo?.let(::largestImage)
+        if (video != null) return Item(video, isVideo = true, imageUrl = image)
         if (image == null) log("no video or image in ${media.javaClass.name} (versions ${versions?.size}, imageInfo $imageInfo)")
-        return image?.let { Item(it, isVideo = false) }
+        return image?.let { Item(it, isVideo = false, imageUrl = it) }
     }
 
     private fun largestImage(imageInfo: Any): String? {
