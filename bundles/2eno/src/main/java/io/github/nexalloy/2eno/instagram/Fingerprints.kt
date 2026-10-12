@@ -58,6 +58,36 @@ val jsonParserFromStringMethods = findMethodListDirect {
 }
 
 /**
+ * Maps a user's friendship status to a `Map<String, Boolean>` with the keys "following", "followed_by",
+ * "blocking" and "incoming_request", like Piko's user friendship status decoder. Used to hide the stealth follow
+ * button when the user already follows the account normally.
+ */
+val friendshipStatusMapMethod = findMethodDirect {
+    findMethod {
+        matcher {
+            returnType = "java.util.Map"
+            usingStrings(listOf("blocking", "followed_by", "following", "incoming_request"), StringMatchType.Equals)
+        }
+    }.single { Modifier.isStatic(it.modifiers) }
+}
+
+/**
+ * Whether a user is private, the no-argument `Boolean` getter of `User` reading the "is_private" column of the live
+ * tree. It is found by the hash of that column (`"is_private".hashCode()`), so the obfuscated name does not matter.
+ * Used to show the stealth follow button only for public accounts, whose stories can be fetched.
+ */
+val userIsPrivateMethod = findMethodDirect {
+    findMethod {
+        matcher {
+            declaredClass("com.instagram.user.model.User")
+            returnType = "java.lang.Boolean"
+            paramCount = 0
+            usingNumbers(1185812334)
+        }
+    }.single()
+}
+
+/**
  * The request dispatcher of Instagram, so the patch can read the headers of the app's own API requests.
  */
 val tigonStartRequestMethods = findMethodListDirect {
