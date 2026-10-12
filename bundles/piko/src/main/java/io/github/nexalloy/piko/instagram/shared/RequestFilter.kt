@@ -3,6 +3,7 @@ package io.github.nexalloy.piko.instagram.shared
 import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.patch
 import io.github.nexalloy.piko.instagram.tigonStartRequestMethods
+import java.io.IOException
 import java.lang.reflect.Field
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -77,30 +78,48 @@ object RequestFilter {
         return ruleFor(uri)?.let { it in enabledRules } ?: false
     }
 
+    /** The uri of a request that is blocked, passed directly or held by one of [args]; null if it is not blocked. */
+    fun blockedUri(args: Array<Any?>): URI? = uriSlots(args).firstOrNull()?.get()?.takeIf(::shouldBlock)
+
     /**
-     * Points a blocked request at an unreachable local address, so it fails like any network error.
-     *
-     * Piko throws an IOException inside startRequest, where Instagram's own try/catch handles it. A hook can only
-     * throw from the call, past that catch, which crashes the request thread.
-     *
-     * @return the blocked uri, or null if the request is not blocked.
+     * Points a request at an unreachable local address, so it fails like any network error. The fallback if the
+     * request cannot be failed by [failRequest].
      */
-    fun blockIfNeeded(args: Array<Any?>): URI? {
-        args.forEachIndexed { index, arg ->
-            if (arg == null) return@forEachIndexed
-            if (arg is URI) {
-                if (!shouldBlock(arg)) return null
-                args[index] = unreachable(arg)
-                return arg
-            }
-            uriFields(arg.javaClass).forEach { field ->
-                val uri = field.get(arg) as? URI ?: return@forEach
-                if (!shouldBlock(uri)) return null
-                field.set(arg, unreachable(uri))
-                return uri
-            }
+    fun redirect(args: Array<Any?>) {
+        uriSlots(args).firstOrNull()?.let { slot -> slot.get()?.let { slot.set(unreachable(it)) } }
+    }
+
+    /**
+     * Fails a request the way TigonServiceLayer.startRequest does on an IOException: failRequest tells the request's
+     * callbacks on the executor. Piko throws that IOException inside startRequest, but a hook can only throw from the
+     * call, past that catch, which crashes the request thread.
+     *
+     * @return what startRequest returns for the failed request, or null if failRequest could not be called.
+     */
+    fun failRequest(layer: Any, args: Array<Any?>): Any? = runCatching {
+        val method = layer.javaClass.declaredMethods.single { it.name == "failRequest" }.apply { isAccessible = true }
+        val types = method.parameterTypes
+        val logger = layer.javaClass.getDeclaredField("performanceLogger").apply { isAccessible = true }.get(layer)
+        val request = args.first { types[0].isInstance(it) }
+        val callbacks = args.first { types[2].isInstance(it) }
+        val qplId = runCatching {
+            val generator = Class.forName("com.facebook.tigon.observers.QPLIdGenerator", false, layer.javaClass.classLoader)
+            generator.getMethod("generateId").invoke(generator.getField("INSTANCE").get(null)) as Int
+        }.getOrDefault(0)
+        method.invoke(layer, request, IOException("Blocked by NexAlloyNext"), callbacks, logger, qplId)
+    }.onFailure { PatcherLog.error(it) { "Cannot fail the blocked request" } }.getOrNull()
+
+    /** Where a request's uri is: an argument itself or a field of one. */
+    private class UriSlot(val get: () -> URI?, val set: (URI) -> Unit)
+
+    private fun uriSlots(args: Array<Any?>): Sequence<UriSlot> = args.indices.asSequence().flatMap { index ->
+        when (val arg = args[index]) {
+            null -> emptySequence()
+            is URI -> sequenceOf(UriSlot({ args[index] as? URI }, { args[index] = it }))
+            else -> uriFields(arg.javaClass).asSequence()
+                .filter { it.get(arg) != null }
+                .map { field -> UriSlot({ field.get(arg) as? URI }, { field.set(arg, it) }) }
         }
-        return null
     }
 
     // The discard port of the device itself refuses the connection right away.
@@ -128,8 +147,10 @@ val InterceptRequests = patch(name = "<Intercept requests>") {
     methods.forEach {
         it.hookMethod {
             before { param ->
-                val uri = RequestFilter.blockIfNeeded(param.args) ?: return@before
+                val uri = RequestFilter.blockedUri(param.args) ?: return@before
                 PatcherLog.info { "Blocked request: $uri" }
+                val failed = RequestFilter.failRequest(param.thisObject, param.args)
+                if (failed != null) param.result = failed else RequestFilter.redirect(param.args)
             }
         }
     }

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.io.IOException
 import java.net.URI
 
 class InstagramSharedTest {
@@ -32,22 +33,41 @@ class InstagramSharedTest {
     }
 
     @Test
-    fun blockIfNeeded() {
+    fun blockedRequests() {
         class Request(var uri: URI)
 
         RequestFilter.enable(Rule.ADS)
         val ads = URI("https://i.instagram.com/api/v1/async_ads/")
         val request = Request(ads)
-        assertEquals(ads, RequestFilter.blockIfNeeded(arrayOf(null, "x", request)))
+        assertEquals(ads, RequestFilter.blockedUri(arrayOf(null, "x", request)))
+        assertNull(RequestFilter.blockedUri(arrayOf(Request(URI("https://i.instagram.com/api/v1/feed/timeline/")))))
+        assertNull(RequestFilter.blockedUri(arrayOf("x")))
+
+        RequestFilter.redirect(arrayOf(request))
         assertEquals(URI("https://127.0.0.1:9/api/v1/async_ads/"), request.uri)
-
         val args = arrayOf<Any?>(ads)
-        assertEquals(ads, RequestFilter.blockIfNeeded(args))
+        RequestFilter.redirect(args)
         assertEquals("127.0.0.1", (args[0] as URI).host)
+    }
 
-        val timeline = URI("https://i.instagram.com/api/v1/feed/timeline/")
-        assertNull(RequestFilter.blockIfNeeded(arrayOf(Request(timeline))))
-        assertNull(RequestFilter.blockIfNeeded(arrayOf("x")))
+    class Callbacks
+
+    /** Like TigonServiceLayer. */
+    @Suppress("unused")
+    class Layer {
+        private val performanceLogger = "logger"
+
+        private fun failRequest(request: URI, e: IOException, callbacks: Callbacks, logger: Any, qplId: Int): Any =
+            "${e.message} $request $logger"
+    }
+
+    @Test
+    fun failRequest() {
+        val uri = URI("https://i.instagram.com/api/v1/async_ads/")
+        assertEquals(
+            "Blocked by NexAlloyNext $uri logger",
+            RequestFilter.failRequest(Layer(), arrayOf(uri, "x", Callbacks())),
+        )
     }
 
     @Test
