@@ -361,28 +361,81 @@ val overflowMenuOptionClickMethod = findMethodDirect {
     }.single()
 }
 
-private const val REELS_MENU_MODULE = "ClipsOrganicMediaItemViewMoreOptionsController"
+/**
+ * Module names of the bottom sheets showing the menu of a post: the reels menu, also used for posts shown like
+ * reels, and the simplified menu of the "≡" button of posts in the home feed.
+ */
+internal val SHEET_MENU_MODULES = listOf(
+    "ClipsOrganicMediaItemViewMoreOptionsController",
+    "SimplifiedMediaOverflowBottomSheet",
+)
 
 /**
- * The bottom sheet builder created right after the reels menu module name, like in Piko's reels menu hook.
+ * The bottom sheet builder created right after a menu module name, like in Piko's reels menu hook.
  */
-private fun MethodData.reelsMenuBuilderClass(): ClassData? {
+private fun MethodData.sheetMenuBuilderClass(): ClassData? {
     val instructions = instructions
-    val moduleIndex = instructions.indexOfFirst { it.string == REELS_MENU_MODULE }
+    val moduleIndex = instructions.indexOfFirst { it.string in SHEET_MENU_MODULES }
     if (moduleIndex < 0) return null
     return instructions.drop(moduleIndex + 1).firstOrNull { it.opcodeEnum == Opcode.NEW_INSTANCE }?.classRef
 }
 
 /**
- * Show the menu of reels and of posts shown like reels, such as in the "For you" feed, whose "reduced" options are
- * "Not interested" and "Report". The redesigned sheet and the other sheet are built by different methods.
+ * Show the bottom sheet menus of posts and reels. The home feed filters the options of its simplified menu to a few
+ * allowed ones, so the download item is added to the sheet itself.
  */
-val reelsMenuMethods = findMethodListDirect {
-    findMethodWithStrings(listOf(REELS_MENU_MODULE)).filter { it.reelsMenuBuilderClass() != null }
+val sheetMenuMethods = findMethodListDirect {
+    SHEET_MENU_MODULES.flatMap { module -> findMethodWithStrings(listOf(module)) }
+        .filter { it.sheetMenuBuilderClass() != null }
+        .distinctBy { it.descriptor }
 }
 
-val reelsMenuBuilderClass = findClassDirect {
-    reelsMenuMethods().mapNotNull { it.reelsMenuBuilderClass() }.distinctBy { it.name }.single()
+val sheetMenuBuilderClass = findClassDirect {
+    sheetMenuMethods().mapNotNull { it.sheetMenuBuilderClass() }.distinctBy { it.name }.single()
+}
+
+/**
+ * The labels of the menu of other people's stories, built by the "ReelOptionsOverflowHelper". Like Piko, the
+ * download label is added there.
+ */
+val storyMenuLabelsMethod = findMethodDirect {
+    findMethodWithStrings(listOf("[INTERNAL] Pause Playback")) {
+        returnType = "java.lang.CharSequence[]"
+        paramCount = 1
+    }.single()
+}
+
+/**
+ * Shows the story menu sheet with its rows, the method creating the sheet whose module is
+ * "stories_mimicry_menu_bottom_sheet".
+ */
+val storyMenuSheetMethod = findMethodDirect {
+    val sheetClass = methodsUsingStrings("stories_mimicry_menu_bottom_sheet").single().declaredClassName
+    findMethod {
+        matcher {
+            returnType = "void"
+            paramTypes(
+                "java.util.List", "kotlin.jvm.functions.Function0", "kotlin.jvm.functions.Function0",
+                "kotlin.jvm.functions.Function0", "kotlin.jvm.functions.Function1", null,
+            )
+        }
+    }.single { method -> method.instructions.any { it.classRef?.name == sheetClass } }
+}
+
+/**
+ * A row of the story menu sheet, created with
+ * `(?, ImageUrl, ?, Integer, String title, String subtitle, String, Function0 onClick, int icon, boolean, boolean)`.
+ */
+val storyMenuRowConstructor = findMethodDirect {
+    findMethod {
+        matcher {
+            name = "<init>"
+            paramTypes(
+                null, "com.instagram.common.typedurl.ImageUrl", null, "java.lang.Integer", "java.lang.String",
+                "java.lang.String", "java.lang.String", "kotlin.jvm.functions.Function0", "int", "boolean", "boolean",
+            )
+        }
+    }.single()
 }
 
 // endregion
