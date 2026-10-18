@@ -13,40 +13,18 @@ import io.github.nexalloy.PatcherLog
 import io.github.nexalloy.hookMethod
 import io.github.nexalloy.patch
 import io.github.nexalloy.`2eno`.instagram.friendshipStatusMapMethod
-import io.github.nexalloy.`2eno`.instagram.jsonParserFromStringMethods
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
-import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
-import io.github.nexalloy.`2eno`.instagram.tigonStartRequestMethods
 import io.github.nexalloy.`2eno`.instagram.userIdGetterMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
-import org.json.JSONObject
 import java.lang.ref.WeakReference
-import java.lang.reflect.Field
 import java.lang.reflect.Method
-import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 
 private const val PREFERENCES = "nexalloy_stealth_follow"
 private const val ACCOUNTS = "accounts"
-private const val API = "https://i.instagram.com/api/v1/"
-
-/** How long fetched stories are reused before they are fetched again. */
-private const val REFRESH_INTERVAL = 5 * 60 * 1000L
-
-/** How soon a fetch is retried after it failed, instead of waiting the whole [REFRESH_INTERVAL]. */
-private const val RETRY_INTERVAL = 30 * 1000L
-
-/** Reels requested in one call. */
-private const val BATCH_SIZE = 20
-
-/** Headers of Instagram's requests that are not copied to the requests of the patch. */
-private val SKIPPED_HEADERS = setOf("host", "content-length", "content-type", "accept-encoding", "connection")
 
 private const val FOLLOW_LABEL = "Stealth follow"
 private const val FOLLOW_UNFOLLOW_LABEL = "Stealth unfollow"
@@ -95,254 +73,82 @@ private class StealthAccounts(context: Context) {
     }
 }
 
-/**
- * Header names that mark a request as the signed-in REST API traffic whose headers the patch reuses. "X-IG-WWW-Claim"
- * is deliberately not here: it rides on Bloks requests too, which do not carry the Authorization/Cookie the patch's
- * own reels_media request needs, so keying off it captured the wrong request.
- */
-private val AUTH_HEADERS = setOf("authorization", "cookie", "ig-u-ds-user-id")
-
-/** Class names of a request URL, read to tell the REST API requests apart from Bloks and other traffic. */
-private val URL_TYPES = setOf("java.net.URI", "java.net.URL", "android.net.Uri")
-
-/**
- * The headers Instagram sends with its signed-in REST API requests, so the patch can fetch stories as that account.
- */
-private object ApiHeaders {
-    @Volatile
-    var headers: Map<String, String> = emptyMap()
-        private set
-
-    // The size of the fullest header set kept so far, and whether it carried an auth header, so a later, sparser or
-    // unauthenticated request does not replace a good capture.
-    @Volatile
-    private var captured = 0
-
-    @Volatile
-    private var haveAuth = false
-
-    private val objectFields = ConcurrentHashMap<Class<*>, List<Field>>()
-
-    // Endpoints already logged, so each request path's auth flags are reported once rather than on every request.
-    private val loggedPaths = ConcurrentHashMap.newKeySet<String>()
-
-    /**
-     * Reads the headers of a request among [args] (the `TigonServiceLayer.startRequest` request). Headers can be a
-     * `Map<String, String>` field, a list of `Name: value` / map-entry header objects, or a bare Authorization/Cookie
-     * string field, across the request object, so every such field is merged. Each Instagram endpoint's auth flags
-     * are logged once, to establish whether the login token is exposed in Java at all. The set carrying real auth is
-     * kept if one is ever seen, else the fullest.
-     */
-    fun capture(args: Array<Any?>) {
-        var url: String? = null
-        val merged = LinkedHashMap<String, String>()
-        for (arg in args) {
-            arg ?: continue
-            for (field in objectFields(arg.javaClass)) {
-                when (val value = runCatching { field.get(arg) }.getOrNull()) {
-                    null -> {}
-                    is Map<*, *> -> for (e in value.entries) {
-                        pair(e.key?.toString(), e.value?.toString())?.let { merged.putIfAbsent(it.first, it.second) }
-                    }
-                    is List<*> -> for (item in value) headerPair(item)?.let { merged.putIfAbsent(it.first, it.second) }
-                    is CharSequence -> {
-                        val text = value.toString()
-                        when {
-                            url == null && text.startsWith("http") && text.contains("instagram") -> url = text
-                            text.startsWith("Bearer ") || text.contains("IGT:2:") -> merged.putIfAbsent("Authorization", text)
-                            text.contains("sessionid=") -> merged.putIfAbsent("Cookie", text)
-                        }
-                    }
-                    else -> if (url == null && value.javaClass.name in URL_TYPES) {
-                        value.toString().takeIf { it.contains("instagram") }?.let { url = it }
-                    }
-                }
-            }
-        }
-        if (url == null || !url!!.contains("instagram") || merged.isEmpty()) return
-        val lower = merged.keys.map { it.lowercase() }.toSet()
-        val auth = lower.any { it in AUTH_HEADERS }
-        // Report each endpoint once with its auth flags, to tell whether Instagram exposes the login token in Java at
-        // all (vs. adding it in the native network layer below this hook).
-        val path = url!!.substringAfter("://").substringAfter('/').substringBefore('?').take(48)
-        if (loggedPaths.add(path)) log(
-            "request /$path: ${merged.size} headers " +
-                "(authz=${"authorization" in lower}, cookie=${"cookie" in lower}, ua=${"user-agent" in lower})",
-        )
-        if (!auth && haveAuth) return
-        if (auth == haveAuth && merged.size < captured) return
-        val kept = merged.filterKeys { it.lowercase() !in SKIPPED_HEADERS }
-        headers = kept
-        captured = merged.size
-        haveAuth = auth
-    }
-
-    /** A `Name: value` string, a `Name=value` string, or a map entry turned into a header pair. */
-    private fun headerPair(header: Any?): Pair<String, String>? {
-        header ?: return null
-        if (header is Map.Entry<*, *>) return pair(header.key?.toString(), header.value?.toString())
-        val text = header.toString()
-        text.indexOf(": ").takeIf { it > 0 }?.let { return pair(text.substring(0, it), text.substring(it + 2)) }
-        text.indexOf('=').takeIf { it > 0 }?.let { return pair(text.substring(0, it), text.substring(it + 1)) }
-        return null
-    }
-
-    private fun pair(name: String?, value: String?): Pair<String, String>? =
-        if (name.isNullOrEmpty() || value == null) null else name to value
-
-    private fun objectFields(clazz: Class<*>) = objectFields.getOrPut(clazz) {
-        generateSequence(clazz) { it.superclass }
-            .takeWhile { it != Any::class.java }
-            .flatMap { it.declaredFields.asSequence() }
-            .filter { !Modifier.isStatic(it.modifiers) && !it.type.isPrimitive }
-            .onEach { it.isAccessible = true }
-            .toList()
-    }
-}
-
-/**
- * The fetched stories of the stealth followed accounts.
- */
-private class StealthReels {
-    @Volatile
-    var reels: List<Any> = emptyList()
-
-    @Volatile
-    var fetchedAt = 0L
-
-    @Volatile
-    var fetching = false
-}
-
 val StealthFollow = patch(
     name = "Stealth follow",
-    description = "Follow public accounts only on this device: their stories appear in your story tray without " +
-        "following them on Instagram, so you do not add to their reach. Long press a profile picture and tap " +
-        "\"Stealth follow\".",
+    description = "Follow public accounts only on this device: open their profile once and their story shows in " +
+        "your story tray, without following them on Instagram, so you do not add to their reach. Tap a profile " +
+        "picture and tap \"Stealth follow\".",
 ) {
     val accounts = StealthAccounts(appContext)
     val mainHandler = Handler(Looper.getMainLooper())
-    val executor = Executors.newSingleThreadExecutor { Thread(it, "NexAlloy stealth follow") }
     fun toast(text: String) = mainHandler.post { Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show() }
 
-    // The headers of Instagram's API requests, reused for the requests of the patch.
-    ::tigonStartRequestMethods.dexMethodList.ifEmpty { throw Exception("TigonServiceLayer.startRequest not found") }
-        .forEach { method ->
-            method.hookMethod {
-                before { param ->
-                    try {
-                        ApiHeaders.capture(param.args)
-                    } catch (e: Exception) {
-                        PatcherLog.error(e) { "Could not read the request headers" }
-                    }
-                }
-            }
-        }
-
-    // Instagram's own parser turns the JSON of the API into reels.
-    val parseReel: Method = ::reelResponseParserMethod.method.apply { isAccessible = true }
-    val reelParser = parseReel.declaringClass.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
-    val jsonParsers = ::jsonParserFromStringMethods.dexMethodList
-        .filter { it.isMethod }
-        .map { it.toMethod().apply { isAccessible = true } }
-    if (jsonParsers.isEmpty()) throw Exception("JSON parser factory not found")
     val reelClass = classLoader.loadClass("com.instagram.model.reels.ReelResponseItemIntf")
     val reelId = reelClass.getMethod("getId")
 
-    fun parse(json: String): Any? {
-        for (factory in jsonParsers) {
-            val reel = runCatching { parseReel.invoke(reelParser, factory.invoke(null, json)) }.getOrNull()
-            if (reel != null) return reel
+    // The story tray. The stories of the stealth followed accounts are read from Instagram's own reel store, where
+    // they land after Instagram fetches them with its own authenticated request (opening the profile triggers that),
+    // and injected at the front of the tray unless it already has them. Nothing is fetched by the patch: on current
+    // Instagram the login token is added in a native layer the patch cannot read, so it cannot make the request
+    // itself.
+    val trayMethod = ::reelStoreAddTrayReelsMethod.method
+    val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
+    val reelStoreClass = trayMethod.declaringClass
+    // Methods of the reel store that look up a reel by its id (one String parameter, a reel return type). The right
+    // one is found at runtime by whichever returns the reel whose id matches, so the obfuscated name does not matter.
+    val reelByIdCandidates = reelStoreClass.methods.filter { method ->
+        method.parameterCount == 1 && method.parameterTypes[0] == String::class.java && (
+            reelClass.isAssignableFrom(method.returnType) ||
+                method.returnType.isAssignableFrom(reelClass) ||
+                method.returnType.name.contains("Reel")
+            )
+    }.onEach { it.isAccessible = true }
+    val reelByIdMethod = AtomicReference<Method>()
+    var storeProbed = false
+
+    fun storeReel(store: Any, id: String): Any? {
+        fun valid(reel: Any?) =
+            reel?.takeIf { reelClass.isInstance(it) && runCatching { reelId.invoke(it) as? String }.getOrNull() == id }
+        reelByIdMethod.get()?.let { return valid(runCatching { it.invoke(store, id) }.getOrNull()) }
+        for (method in reelByIdCandidates) {
+            val reel = valid(runCatching { method.invoke(store, id) }.getOrNull())
+            if (reel != null) {
+                reelByIdMethod.set(method)
+                log("reel-by-id store method: ${method.name}")
+                return reel
+            }
         }
         return null
     }
 
-    val state = StealthReels()
-
-    fun fetch(ids: Set<String>) {
-        val headers = ApiHeaders.headers
-        if (headers.isEmpty()) return log("no request headers yet")
-        var failed = false
-        val fetched = ids.chunked(BATCH_SIZE).flatMap { batch ->
-            val url = API + "feed/reels_media/?" + batch.joinToString("&") { "reel_ids=$it" }
-            val connection = URL(url).openConnection() as HttpURLConnection
-            try {
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 30_000
-                headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
-                val code = connection.responseCode
-                if (code !in 200..299) {
-                    log("reels_media returned HTTP $code")
-                    failed = true
-                    return@flatMap emptyList()
-                }
-                val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                // A requested reel can come back in the "reels_media" array, the "reels" map, or both, and which one
-                // is populated varies by Instagram version, so read both (keeping one JSON per reel id) instead of
-                // trusting whichever happens to be present. An empty "reels_media" array must not hide "reels".
-                val jsons = LinkedHashMap<String, String>()
-                body.optJSONArray("reels_media")?.let { array ->
-                    for (i in 0 until array.length()) {
-                        val reel = array.getJSONObject(i)
-                        jsons[reel.optString("id", "reels_media:$i")] = reel.toString()
-                    }
-                }
-                body.optJSONObject("reels")?.let { map ->
-                    for (key in map.keys()) jsons.putIfAbsent(key, map.getJSONObject(key).toString())
-                }
-                jsons.values.mapNotNull { json ->
-                    runCatching { parse(json) }.onFailure { log("could not parse a reel: $it") }.getOrNull()
-                }
-            } finally {
-                connection.disconnect()
-            }
-        }
-        // Keep the previously fetched stories when a fetch fails and returns nothing, rather than blanking the tray.
-        if (!failed || fetched.isNotEmpty()) state.reels = fetched
-        // On success cache for the full interval; after an error retry on the next tray update (in RETRY_INTERVAL)
-        // instead of showing nothing until REFRESH_INTERVAL passes.
-        state.fetchedAt =
-            if (failed) System.currentTimeMillis() - REFRESH_INTERVAL + RETRY_INTERVAL else System.currentTimeMillis()
-        log("fetched ${fetched.size} reels of ${ids.size} accounts" + if (failed) " (with errors, will retry)" else "")
-    }
-
-    fun refresh(force: Boolean = false) {
-        val ids = accounts.ids()
-        if (ids.isEmpty() || state.fetching) return
-        if (!force && System.currentTimeMillis() - state.fetchedAt < REFRESH_INTERVAL) return
-        state.fetching = true
-        executor.execute {
-            try {
-                fetch(ids)
-            } catch (e: Exception) {
-                log("fetching failed: ${e.stackTraceToString().take(1500)}")
-            } finally {
-                state.fetching = false
-            }
-        }
-    }
-
-    // The story tray: the stories of the stealth followed accounts come first, unless the tray already has them.
-    val trayMethod = ::reelStoreAddTrayReelsMethod.method
-    val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     trayMethod.hookMethod {
         before { param ->
             try {
                 val ids = accounts.ids()
                 if (ids.isEmpty() || trayIndex < 0) return@before
-                refresh()
+                val store = param.thisObject ?: return@before
                 val tray = param.args.getOrNull(trayIndex) as? List<*> ?: return@before
                 val trayIds = tray.mapNotNull { reel ->
                     reel?.takeIf(reelClass::isInstance)?.let { reelId.invoke(it) as? String }
                 }.toSet()
-                val added = state.reels.filter { reel ->
-                    val id = reelId.invoke(reel) as? String
-                    id != null && id in ids && id !in trayIds
+                // One-time probe of the store, so a logcat shows what a stealth id resolves to (and its type) when
+                // the account's profile has been opened, even if the injection below finds nothing.
+                if (!storeProbed) {
+                    storeProbed = true
+                    log("reel store ${reelStoreClass.name}; tray item ${tray.firstOrNull()?.javaClass?.name}; " +
+                        "${reelByIdCandidates.size} id getters")
+                    ids.firstOrNull()?.let { probeId ->
+                        reelByIdCandidates.forEach { method ->
+                            val result = runCatching { method.invoke(store, probeId) }.getOrNull()
+                            if (result != null) log("probe ${method.name}($probeId) -> ${result.javaClass.name}")
+                        }
+                    }
                 }
+                val added = ids.filter { it !in trayIds }.mapNotNull { id -> storeReel(store, id) }
                 if (added.isEmpty()) return@before
                 @Suppress("UNCHECKED_CAST")
                 param.args[trayIndex] = added + (tray as List<Any?>)
-                log("added ${added.size} reels to the story tray")
+                log("added ${added.size} stealth reels to the tray from the store")
             } catch (e: Exception) {
                 PatcherLog.error(e) { "Could not add the stealth followed stories" }
             }
@@ -432,7 +238,7 @@ val StealthFollow = patch(
                 val profile = resumedProfile.get() ?: return@before
                 val actions = param.args[2] as? List<*> ?: return@before
                 val user = profileUser.invoke(profile) ?: return@before
-                // Only public accounts, whose stories can be fetched without following.
+                // Only public accounts, whose stories can be seen without following.
                 if (!isPublic(user)) return@before
                 // Hidden when the account is already followed normally; stealth follow would add nothing then.
                 if (alreadyFollowing(user)) return@before
@@ -446,13 +252,10 @@ val StealthFollow = patch(
                                 log("${if (followed) "followed" else "unfollowed"} $id")
                                 // Change the button's own icon and label at once, so the tap is visible.
                                 bar?.let { updateStealthButton(it, label(followed), iconOf(followed)) }
-                                if (followed) {
-                                    toast("Stealth following. Refresh your feed to see their stories.")
-                                    refresh(force = true)
-                                } else {
-                                    state.reels = state.reels.filter { reelId.invoke(it) != id }
-                                    toast("Stealth unfollowed")
-                                }
+                                toast(
+                                    if (followed) "Stealth following. Open their profile to load their story."
+                                    else "Stealth unfollowed",
+                                )
                             } catch (e: Exception) {
                                 log("toggling failed: ${e.stackTraceToString().take(1500)}")
                             }
@@ -473,6 +276,4 @@ val StealthFollow = patch(
         }
     }
     }.onFailure { PatcherLog.error(it) { "Could not set up the stealth follow button" } }
-
-    refresh(force = true)
 }
