@@ -123,12 +123,15 @@ private object ApiHeaders {
 
     private val objectFields = ConcurrentHashMap<Class<*>, List<Field>>()
 
+    // Endpoints already logged, so each request path's auth flags are reported once rather than on every request.
+    private val loggedPaths = ConcurrentHashMap.newKeySet<String>()
+
     /**
-     * Reads the headers of a signed-in REST API request among [args] (the `TigonServiceLayer.startRequest` request).
-     * Headers can be a `Map<String, String>` field, a list of `Name: value` / map-entry header objects, or a bare
-     * Authorization/Cookie string field, across the request object, so every such field is merged. Only requests to
-     * an instagram.com `/api/` URL are considered, since Bloks and other traffic lack the Authorization/Cookie the
-     * patch's own request needs. The first set carrying real auth is kept (then the fullest), and its names logged.
+     * Reads the headers of a request among [args] (the `TigonServiceLayer.startRequest` request). Headers can be a
+     * `Map<String, String>` field, a list of `Name: value` / map-entry header objects, or a bare Authorization/Cookie
+     * string field, across the request object, so every such field is merged. Each Instagram endpoint's auth flags
+     * are logged once, to establish whether the login token is exposed in Java at all. The set carrying real auth is
+     * kept if one is ever seen, else the fullest.
      */
     fun capture(args: Array<Any?>) {
         var url: String? = null
@@ -156,15 +159,22 @@ private object ApiHeaders {
                 }
             }
         }
-        if (url?.contains("/api/") != true || merged.isEmpty()) return
-        val auth = merged.keys.any { it.lowercase() in AUTH_HEADERS }
+        if (url == null || !url!!.contains("instagram") || merged.isEmpty()) return
+        val lower = merged.keys.map { it.lowercase() }.toSet()
+        val auth = lower.any { it in AUTH_HEADERS }
+        // Report each endpoint once with its auth flags, to tell whether Instagram exposes the login token in Java at
+        // all (vs. adding it in the native network layer below this hook).
+        val path = url!!.substringAfter("://").substringAfter('/').substringBefore('?').take(48)
+        if (loggedPaths.add(path)) log(
+            "request /$path: ${merged.size} headers " +
+                "(authz=${"authorization" in lower}, cookie=${"cookie" in lower}, ua=${"user-agent" in lower})",
+        )
         if (!auth && haveAuth) return
         if (auth == haveAuth && merged.size < captured) return
         val kept = merged.filterKeys { it.lowercase() !in SKIPPED_HEADERS }
         headers = kept
         captured = merged.size
         haveAuth = auth
-        log("captured ${kept.size} request headers (auth=$auth): ${kept.keys.sorted().joinToString()}")
     }
 
     /** A `Name: value` string, a `Name=value` string, or a map entry turned into a header pair. */
