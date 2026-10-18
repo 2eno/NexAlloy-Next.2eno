@@ -611,21 +611,44 @@ val DownloadMedia = patch(
     menus["profile picture"] = runCatching {
         val actionConstructor = ::profilePictureActionConstructor.constructor.apply { isAccessible = true }
         val function0 = actionConstructor.parameterTypes[1]
-        val imageViewClass = classLoader.loadClass("com.instagram.common.ui.widget.imageview.IgImageView")
-        val imageUrl = imageViewClass.getMethod("getUrlForViewTrackers")
-        val pictureId = appContext.resources.getIdentifier("expanded_profile_pic", "id", appContext.packageName)
         val pictureIcon = appContext.resources.getIdentifier(
             "instagram_download_pano_outline_24", "drawable", appContext.packageName,
         ).takeIf { it != 0 } ?: icon
 
+        // The URL is read from the User of the open profile, not the IgImageView: IgImageView no longer has
+        // getUrlForViewTrackers on current Instagram, which disabled the whole option.
+        val profileClass = classLoader.loadClass("com.instagram.profile.fragment.UserDetailFragment")
+        val userClass = classLoader.loadClass("com.instagram.user.model.User")
+        val profileUser = profileClass.declaredMethods.first { it.parameterCount == 0 && it.returnType == userClass }
+            .apply { isAccessible = true }
+        val imageUrlClass = classLoader.loadClass("com.instagram.common.typedurl.ImageUrl")
+        val imageUrlGetUrl = imageUrlClass.getMethod("getUrl")
+        // The no-argument getters of User returning an ImageUrl: the profile picture and its HD variant.
+        val pictureGetters = userClass.methods
+            .filter { it.parameterCount == 0 && imageUrlClass.isAssignableFrom(it.returnType) }
+            .onEach { it.isAccessible = true }
+        if (pictureGetters.isEmpty()) throw Exception("No profile picture getter on User")
+
+        var resumedProfile = WeakReference<Any>(null)
+        profileClass.getDeclaredMethod("onResume").hookMethod {
+            after { param -> resumedProfile = WeakReference(param.thisObject) }
+        }
+        profileClass.getDeclaredMethod("onPause").hookMethod {
+            before { param -> if (resumedProfile.get() === param.thisObject) resumedProfile = WeakReference(null) }
+        }
+
         /**
-         * The URL of the profile picture shown in the screen of [bar].
+         * The URL of the profile picture of the profile on screen.
          */
-        fun pictureUrl(bar: View): String? {
-            val picture = bar.rootView.findViewById<View>(pictureId)?.takeIf(imageViewClass::isInstance)
-                ?: return null.also { log("no profile picture view") }
-            val url = imageUrl.invoke(picture) ?: return null
-            return url.javaClass.getMethod("getUrl").invoke(url) as String?
+        fun pictureUrl(): String? {
+            val user = resumedProfile.get()?.let { profileUser.invoke(it) }
+                ?: return null.also { log("no profile user") }
+            for (getter in pictureGetters) {
+                val image = runCatching { getter.invoke(user) }.getOrNull() ?: continue
+                val url = runCatching { imageUrlGetUrl.invoke(image) as? String }.getOrNull()
+                if (!url.isNullOrEmpty()) return url
+            }
+            return null.also { log("no profile picture url on the user") }
         }
 
         ::profilePictureActionsMethod.hookMethod {
@@ -639,7 +662,7 @@ val DownloadMedia = patch(
                                 log("tapped below the profile picture")
                                 try {
                                     val activity = activityIn(bar)
-                                    val url = pictureUrl(bar)
+                                    val url = pictureUrl()
                                     when {
                                         activity == null -> log("no activity for the profile picture")
                                         url == null -> toast(activity, "No profile picture found")

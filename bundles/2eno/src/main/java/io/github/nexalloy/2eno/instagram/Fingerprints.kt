@@ -88,6 +88,25 @@ val userIsPrivateMethod = findMethodDirect {
 }
 
 /**
+ * The no-argument `String` getters of `User` that read a numeric id column of the live tree, found by the hash of
+ * the column name ("pk", "id" or "strong_id__") like [userIsPrivateMethod]. The reliable source of the numeric user
+ * id (pk). This is a list rather than a single method, so it never fails the patch when a build matches none of the
+ * hashes or several getters; the stealth follow patch validates and falls back to a heuristic.
+ */
+val userIdGetterMethods = findMethodListDirect {
+    listOf("pk".hashCode(), "id".hashCode(), "strong_id__".hashCode()).flatMap { hash ->
+        findMethod {
+            matcher {
+                declaredClass("com.instagram.user.model.User")
+                returnType = "java.lang.String"
+                paramCount = 0
+                usingNumbers(hash)
+            }
+        }
+    }.distinctBy { it.descriptor }
+}
+
+/**
  * The request dispatcher of Instagram, so the patch can read the headers of the app's own API requests.
  */
 val tigonStartRequestMethods = findMethodListDirect {
