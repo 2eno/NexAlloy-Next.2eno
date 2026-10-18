@@ -125,6 +125,8 @@ val StealthFollow = patch(
         before { param ->
             try {
                 val ids = accounts.ids()
+                // Logged on every tray update so a logcat confirms the hook fires and with how many stealth ids.
+                log("tray hook: ${ids.size} ids, trayIndex=$trayIndex, this=${param.thisObject?.javaClass?.name}")
                 if (ids.isEmpty() || trayIndex < 0) return@before
                 val store = param.thisObject ?: return@before
                 val tray = param.args.getOrNull(trayIndex) as? List<*> ?: return@before
