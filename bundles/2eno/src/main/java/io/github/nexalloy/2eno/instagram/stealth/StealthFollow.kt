@@ -19,6 +19,7 @@ import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
 import io.github.nexalloy.`2eno`.instagram.tigonStartRequestMethods
+import io.github.nexalloy.`2eno`.instagram.userIdGetterMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import org.json.JSONObject
 import java.lang.ref.WeakReference
@@ -37,6 +38,9 @@ private const val API = "https://i.instagram.com/api/v1/"
 
 /** How long fetched stories are reused before they are fetched again. */
 private const val REFRESH_INTERVAL = 5 * 60 * 1000L
+
+/** How soon a fetch is retried after it failed, instead of waiting the whole [REFRESH_INTERVAL]. */
+private const val RETRY_INTERVAL = 30 * 1000L
 
 /** Reels requested in one call. */
 private const val BATCH_SIZE = 20
@@ -92,6 +96,13 @@ private class StealthAccounts(context: Context) {
 }
 
 /**
+ * Header names that mark a request as the signed-in API traffic whose headers the patch reuses. Instagram holds its
+ * request headers in a `Map<String, String>` field of the request (the same map Piko's LimitFeedToFollowingProfiles
+ * reads), so the capture keys off one of these rather than a literal "Authorization" that a build may not carry.
+ */
+private val AUTH_HEADERS = setOf("authorization", "cookie", "ig-u-ds-user-id", "ig-u-rur", "x-ig-www-claim")
+
+/**
  * The headers Instagram sends with its API requests, so the patch can fetch stories as the signed-in account.
  */
 private object ApiHeaders {
@@ -99,34 +110,57 @@ private object ApiHeaders {
     var headers: Map<String, String> = emptyMap()
         private set
 
-    private val listFields = ConcurrentHashMap<Class<*>, List<Field>>()
+    // The size of the fullest authenticated header set captured so far, so a later, sparser request does not replace
+    // a good capture.
+    @Volatile
+    private var captured = 0
+
+    private val objectFields = ConcurrentHashMap<Class<*>, List<Field>>()
 
     /**
-     * Reads the headers of the `TigonServiceLayer.startRequest` request among [args]. A header is an object whose
-     * `toString` is `Name: value`, kept in a list of the request.
+     * Reads the headers of an authenticated request among [args] (the `TigonServiceLayer.startRequest` request). The
+     * headers are a `Map<String, String>` field of the request, or on some builds a list of `Name: value` / map-entry
+     * header objects. The fullest set carrying an auth header is kept.
      */
     fun capture(args: Array<Any?>) {
         for (request in args) {
             request ?: continue
-            for (field in listFields(request.javaClass)) {
-                val list = field.get(request) as? List<*> ?: continue
-                val pairs = list.mapNotNull { header ->
-                    val text = header?.toString() ?: return@mapNotNull null
-                    val separator = text.indexOf(": ")
-                    if (separator <= 0) null else text.substring(0, separator) to text.substring(separator + 2)
+            for (field in objectFields(request.javaClass)) {
+                val value = runCatching { field.get(request) }.getOrNull() ?: continue
+                val pairs = when (value) {
+                    is Map<*, *> -> value.entries.mapNotNull { pair(it.key?.toString(), it.value?.toString()) }
+                    is List<*> -> value.mapNotNull(::headerPair)
+                    else -> continue
                 }
-                if (pairs.none { it.first.equals("Authorization", ignoreCase = true) }) continue
-                headers = pairs.filter { it.first.lowercase() !in SKIPPED_HEADERS }.toMap()
+                if (pairs.none { it.first.lowercase() in AUTH_HEADERS }) continue
+                val kept = pairs.filter { it.first.lowercase() !in SKIPPED_HEADERS }.toMap()
+                if (kept.size < captured) continue
+                headers = kept
+                captured = kept.size
+                log("captured ${kept.size} request headers: ${kept.keys.sorted().joinToString()}")
                 return
             }
         }
     }
 
-    private fun listFields(clazz: Class<*>) = listFields.getOrPut(clazz) {
+    /** A `Name: value` string, a `Name=value` string, or a map entry turned into a header pair. */
+    private fun headerPair(header: Any?): Pair<String, String>? {
+        header ?: return null
+        if (header is Map.Entry<*, *>) return pair(header.key?.toString(), header.value?.toString())
+        val text = header.toString()
+        text.indexOf(": ").takeIf { it > 0 }?.let { return pair(text.substring(0, it), text.substring(it + 2)) }
+        text.indexOf('=').takeIf { it > 0 }?.let { return pair(text.substring(0, it), text.substring(it + 1)) }
+        return null
+    }
+
+    private fun pair(name: String?, value: String?): Pair<String, String>? =
+        if (name.isNullOrEmpty() || value == null) null else name to value
+
+    private fun objectFields(clazz: Class<*>) = objectFields.getOrPut(clazz) {
         generateSequence(clazz) { it.superclass }
             .takeWhile { it != Any::class.java }
             .flatMap { it.declaredFields.asSequence() }
-            .filter { !Modifier.isStatic(it.modifiers) && List::class.java.isAssignableFrom(it.type) }
+            .filter { !Modifier.isStatic(it.modifiers) && !it.type.isPrimitive }
             .onEach { it.isAccessible = true }
             .toList()
     }
@@ -194,6 +228,7 @@ val StealthFollow = patch(
     fun fetch(ids: Set<String>) {
         val headers = ApiHeaders.headers
         if (headers.isEmpty()) return log("no request headers yet")
+        var failed = false
         val fetched = ids.chunked(BATCH_SIZE).flatMap { batch ->
             val url = API + "feed/reels_media/?" + batch.joinToString("&") { "reel_ids=$it" }
             val connection = URL(url).openConnection() as HttpURLConnection
@@ -204,24 +239,37 @@ val StealthFollow = patch(
                 val code = connection.responseCode
                 if (code !in 200..299) {
                     log("reels_media returned HTTP $code")
+                    failed = true
                     return@flatMap emptyList()
                 }
                 val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                val jsons = body.optJSONArray("reels_media")?.let { array ->
-                    (0 until array.length()).map { array.getJSONObject(it).toString() }
-                } ?: body.optJSONObject("reels")?.let { map ->
-                    map.keys().asSequence().map { map.getJSONObject(it).toString() }.toList()
-                } ?: emptyList()
-                jsons.mapNotNull { json ->
+                // A requested reel can come back in the "reels_media" array, the "reels" map, or both, and which one
+                // is populated varies by Instagram version, so read both (keeping one JSON per reel id) instead of
+                // trusting whichever happens to be present. An empty "reels_media" array must not hide "reels".
+                val jsons = LinkedHashMap<String, String>()
+                body.optJSONArray("reels_media")?.let { array ->
+                    for (i in 0 until array.length()) {
+                        val reel = array.getJSONObject(i)
+                        jsons[reel.optString("id", "reels_media:$i")] = reel.toString()
+                    }
+                }
+                body.optJSONObject("reels")?.let { map ->
+                    for (key in map.keys()) jsons.putIfAbsent(key, map.getJSONObject(key).toString())
+                }
+                jsons.values.mapNotNull { json ->
                     runCatching { parse(json) }.onFailure { log("could not parse a reel: $it") }.getOrNull()
                 }
             } finally {
                 connection.disconnect()
             }
         }
-        state.reels = fetched
-        state.fetchedAt = System.currentTimeMillis()
-        log("fetched ${fetched.size} reels of ${ids.size} accounts")
+        // Keep the previously fetched stories when a fetch fails and returns nothing, rather than blanking the tray.
+        if (!failed || fetched.isNotEmpty()) state.reels = fetched
+        // On success cache for the full interval; after an error retry on the next tray update (in RETRY_INTERVAL)
+        // instead of showing nothing until REFRESH_INTERVAL passes.
+        state.fetchedAt =
+            if (failed) System.currentTimeMillis() - REFRESH_INTERVAL + RETRY_INTERVAL else System.currentTimeMillis()
+        log("fetched ${fetched.size} reels of ${ids.size} accounts" + if (failed) " (with errors, will retry)" else "")
     }
 
     fun refresh(force: Boolean = false) {
@@ -275,22 +323,27 @@ val StealthFollow = patch(
     val profileUser = profileClass.declaredMethods.first { it.parameterCount == 0 && it.returnType == userClass }
         .apply { isAccessible = true }
 
-    // The id getters of User are obfuscated and change between versions, so the user id is read as the value of the
-    // single no-argument String getter that is all digits, which only the numeric user id (pk) is.
+    // The pk getters of User, found by the hash of their id column. The reliable source of the numeric user id;
+    // empty when the fingerprint matched nothing on this build, where the heuristic below is the only source.
+    val pkGetters = runCatching {
+        ::userIdGetterMethods.dexMethodList.filter { it.isMethod }.map { it.toMethod().apply { isAccessible = true } }
+    }.onFailure { PatcherLog.error(it) { "User id getters not found" } }.getOrNull().orEmpty()
+
+    // The id getters of User are obfuscated and change between versions, so as a fallback the user id is read as the
+    // value of a no-argument String getter that is all digits, which the numeric user id (pk) is. Sorted by name so
+    // the order is stable across runs.
     val userIdGetters = userClass.methods
         .filter { it.parameterCount == 0 && it.returnType == String::class.java }
+        .sortedBy { it.name }
         .onEach { it.isAccessible = true }
-    val chosenUserIdGetter = java.util.concurrent.atomic.AtomicReference<Method>()
+    fun isUserId(value: String?) = value != null && value.length in 1..20 && value.all { it.isDigit() }
+    // Resolved per user and re-validated every time, never cached across users: a getter that reads the pk for one
+    // account can be unset or a different numeric field for another, which showed the wrong follow state on the
+    // button and hid it on some profiles.
     fun userIdOf(user: Any): String? {
         fun read(getter: Method) = runCatching { getter.invoke(user) as? String }.getOrNull()
-        chosenUserIdGetter.get()?.let { return read(it) }
-        for (getter in userIdGetters) {
-            val value = read(getter)
-            if (value != null && value.length in 1..20 && value.all { it.isDigit() }) {
-                chosenUserIdGetter.set(getter)
-                return value
-            }
-        }
+        for (getter in pkGetters) read(getter).takeIf(::isUserId)?.let { return it }
+        for (getter in userIdGetters) read(getter).takeIf(::isUserId)?.let { return it }
         return null
     }
 

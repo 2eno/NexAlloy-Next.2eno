@@ -14,7 +14,7 @@ android {
             rootProject.file("2eno-patches/gradle.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
         }["version"] as String? ?: "0.0.0"
         // Bumped for changes to the hooks of this bundle, reset when the 2eno Patches version changes.
-        val bundleRevision = 8
+        val bundleRevision = 10
         versionName = "$patchesVersion-$bundleRevision"
         versionCode = patchesVersion.split('.').fold(0) { code, part -> code * 1000 + (part.toIntOrNull() ?: 0) } * 100 + bundleRevision
     }
