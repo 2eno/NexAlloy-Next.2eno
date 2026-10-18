@@ -96,51 +96,75 @@ private class StealthAccounts(context: Context) {
 }
 
 /**
- * Header names that mark a request as the signed-in API traffic whose headers the patch reuses. Instagram holds its
- * request headers in a `Map<String, String>` field of the request (the same map Piko's LimitFeedToFollowingProfiles
- * reads), so the capture keys off one of these rather than a literal "Authorization" that a build may not carry.
+ * Header names that mark a request as the signed-in REST API traffic whose headers the patch reuses. "X-IG-WWW-Claim"
+ * is deliberately not here: it rides on Bloks requests too, which do not carry the Authorization/Cookie the patch's
+ * own reels_media request needs, so keying off it captured the wrong request.
  */
-private val AUTH_HEADERS = setOf("authorization", "cookie", "ig-u-ds-user-id", "ig-u-rur", "x-ig-www-claim")
+private val AUTH_HEADERS = setOf("authorization", "cookie", "ig-u-ds-user-id")
+
+/** Class names of a request URL, read to tell the REST API requests apart from Bloks and other traffic. */
+private val URL_TYPES = setOf("java.net.URI", "java.net.URL", "android.net.Uri")
 
 /**
- * The headers Instagram sends with its API requests, so the patch can fetch stories as the signed-in account.
+ * The headers Instagram sends with its signed-in REST API requests, so the patch can fetch stories as that account.
  */
 private object ApiHeaders {
     @Volatile
     var headers: Map<String, String> = emptyMap()
         private set
 
-    // The size of the fullest authenticated header set captured so far, so a later, sparser request does not replace
-    // a good capture.
+    // The size of the fullest header set kept so far, and whether it carried an auth header, so a later, sparser or
+    // unauthenticated request does not replace a good capture.
     @Volatile
     private var captured = 0
+
+    @Volatile
+    private var haveAuth = false
 
     private val objectFields = ConcurrentHashMap<Class<*>, List<Field>>()
 
     /**
-     * Reads the headers of an authenticated request among [args] (the `TigonServiceLayer.startRequest` request). The
-     * headers are a `Map<String, String>` field of the request, or on some builds a list of `Name: value` / map-entry
-     * header objects. The fullest set carrying an auth header is kept.
+     * Reads the headers of a signed-in REST API request among [args] (the `TigonServiceLayer.startRequest` request).
+     * Headers can be a `Map<String, String>` field, a list of `Name: value` / map-entry header objects, or a bare
+     * Authorization/Cookie string field, across the request object, so every such field is merged. Only requests to
+     * an instagram.com `/api/` URL are considered, since Bloks and other traffic lack the Authorization/Cookie the
+     * patch's own request needs. The first set carrying real auth is kept (then the fullest), and its names logged.
      */
     fun capture(args: Array<Any?>) {
-        for (request in args) {
-            request ?: continue
-            for (field in objectFields(request.javaClass)) {
-                val value = runCatching { field.get(request) }.getOrNull() ?: continue
-                val pairs = when (value) {
-                    is Map<*, *> -> value.entries.mapNotNull { pair(it.key?.toString(), it.value?.toString()) }
-                    is List<*> -> value.mapNotNull(::headerPair)
-                    else -> continue
+        var url: String? = null
+        val merged = LinkedHashMap<String, String>()
+        for (arg in args) {
+            arg ?: continue
+            for (field in objectFields(arg.javaClass)) {
+                when (val value = runCatching { field.get(arg) }.getOrNull()) {
+                    null -> {}
+                    is Map<*, *> -> for (e in value.entries) {
+                        pair(e.key?.toString(), e.value?.toString())?.let { merged.putIfAbsent(it.first, it.second) }
+                    }
+                    is List<*> -> for (item in value) headerPair(item)?.let { merged.putIfAbsent(it.first, it.second) }
+                    is CharSequence -> {
+                        val text = value.toString()
+                        when {
+                            url == null && text.startsWith("http") && text.contains("instagram") -> url = text
+                            text.startsWith("Bearer ") || text.contains("IGT:2:") -> merged.putIfAbsent("Authorization", text)
+                            text.contains("sessionid=") -> merged.putIfAbsent("Cookie", text)
+                        }
+                    }
+                    else -> if (url == null && value.javaClass.name in URL_TYPES) {
+                        value.toString().takeIf { it.contains("instagram") }?.let { url = it }
+                    }
                 }
-                if (pairs.none { it.first.lowercase() in AUTH_HEADERS }) continue
-                val kept = pairs.filter { it.first.lowercase() !in SKIPPED_HEADERS }.toMap()
-                if (kept.size < captured) continue
-                headers = kept
-                captured = kept.size
-                log("captured ${kept.size} request headers: ${kept.keys.sorted().joinToString()}")
-                return
             }
         }
+        if (url?.contains("/api/") != true || merged.isEmpty()) return
+        val auth = merged.keys.any { it.lowercase() in AUTH_HEADERS }
+        if (!auth && haveAuth) return
+        if (auth == haveAuth && merged.size < captured) return
+        val kept = merged.filterKeys { it.lowercase() !in SKIPPED_HEADERS }
+        headers = kept
+        captured = merged.size
+        haveAuth = auth
+        log("captured ${kept.size} request headers (auth=$auth): ${kept.keys.sorted().joinToString()}")
     }
 
     /** A `Name: value` string, a `Name=value` string, or a map entry turned into a header pair. */
@@ -328,6 +352,7 @@ val StealthFollow = patch(
     val pkGetters = runCatching {
         ::userIdGetterMethods.dexMethodList.filter { it.isMethod }.map { it.toMethod().apply { isAccessible = true } }
     }.onFailure { PatcherLog.error(it) { "User id getters not found" } }.getOrNull().orEmpty()
+    log("pk getters: ${pkGetters.size}")
 
     // The id getters of User are obfuscated and change between versions, so as a fallback the user id is read as the
     // value of a no-argument String getter that is all digits, which the numeric user id (pk) is. Sorted by name so
