@@ -38,6 +38,9 @@ private const val API = "https://i.instagram.com/api/v1/"
 /** How long fetched stories are reused before they are fetched again. */
 private const val REFRESH_INTERVAL = 5 * 60 * 1000L
 
+/** How soon a fetch is retried after it failed, instead of waiting the whole [REFRESH_INTERVAL]. */
+private const val RETRY_INTERVAL = 30 * 1000L
+
 /** Reels requested in one call. */
 private const val BATCH_SIZE = 20
 
@@ -194,6 +197,7 @@ val StealthFollow = patch(
     fun fetch(ids: Set<String>) {
         val headers = ApiHeaders.headers
         if (headers.isEmpty()) return log("no request headers yet")
+        var failed = false
         val fetched = ids.chunked(BATCH_SIZE).flatMap { batch ->
             val url = API + "feed/reels_media/?" + batch.joinToString("&") { "reel_ids=$it" }
             val connection = URL(url).openConnection() as HttpURLConnection
@@ -204,24 +208,37 @@ val StealthFollow = patch(
                 val code = connection.responseCode
                 if (code !in 200..299) {
                     log("reels_media returned HTTP $code")
+                    failed = true
                     return@flatMap emptyList()
                 }
                 val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                val jsons = body.optJSONArray("reels_media")?.let { array ->
-                    (0 until array.length()).map { array.getJSONObject(it).toString() }
-                } ?: body.optJSONObject("reels")?.let { map ->
-                    map.keys().asSequence().map { map.getJSONObject(it).toString() }.toList()
-                } ?: emptyList()
-                jsons.mapNotNull { json ->
+                // A requested reel can come back in the "reels_media" array, the "reels" map, or both, and which one
+                // is populated varies by Instagram version, so read both (keeping one JSON per reel id) instead of
+                // trusting whichever happens to be present. An empty "reels_media" array must not hide "reels".
+                val jsons = LinkedHashMap<String, String>()
+                body.optJSONArray("reels_media")?.let { array ->
+                    for (i in 0 until array.length()) {
+                        val reel = array.getJSONObject(i)
+                        jsons[reel.optString("id", "reels_media:$i")] = reel.toString()
+                    }
+                }
+                body.optJSONObject("reels")?.let { map ->
+                    for (key in map.keys()) jsons.putIfAbsent(key, map.getJSONObject(key).toString())
+                }
+                jsons.values.mapNotNull { json ->
                     runCatching { parse(json) }.onFailure { log("could not parse a reel: $it") }.getOrNull()
                 }
             } finally {
                 connection.disconnect()
             }
         }
-        state.reels = fetched
-        state.fetchedAt = System.currentTimeMillis()
-        log("fetched ${fetched.size} reels of ${ids.size} accounts")
+        // Keep the previously fetched stories when a fetch fails and returns nothing, rather than blanking the tray.
+        if (!failed || fetched.isNotEmpty()) state.reels = fetched
+        // On success cache for the full interval; after an error retry on the next tray update (in RETRY_INTERVAL)
+        // instead of showing nothing until REFRESH_INTERVAL passes.
+        state.fetchedAt =
+            if (failed) System.currentTimeMillis() - REFRESH_INTERVAL + RETRY_INTERVAL else System.currentTimeMillis()
+        log("fetched ${fetched.size} reels of ${ids.size} accounts" + if (failed) " (with errors, will retry)" else "")
     }
 
     fun refresh(force: Boolean = false) {
