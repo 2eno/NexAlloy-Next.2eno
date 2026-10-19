@@ -15,6 +15,7 @@ import io.github.nexalloy.patch
 import io.github.nexalloy.`2eno`.instagram.friendshipStatusMapMethod
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
+import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
 import io.github.nexalloy.`2eno`.instagram.userIdGetterMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
@@ -94,6 +95,24 @@ val StealthFollow = patch(
     val trayMethod = ::reelStoreAddTrayReelsMethod.method
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     val capturedReels = ConcurrentHashMap<String, Any>()
+
+    // Capture: Instagram parses every reel through this parser, including a profile's story it fetches with its own
+    // authenticated request when the profile is opened. A stealth account's parsed reel (a ReelResponseItem, the same
+    // type the tray holds) is kept here so the tray hook can inject it, since a non-followed account's story never
+    // reaches the tray method itself.
+    runCatching {
+        ::reelResponseParserMethod.method.hookMethod {
+            after { param ->
+                try {
+                    val reel = param.result?.takeIf(reelClass::isInstance) ?: return@after
+                    val id = runCatching { reelId.invoke(reel) as? String }.getOrNull() ?: return@after
+                    if (id in accounts.ids() && capturedReels.put(id, reel) == null) log("captured stealth reel $id (parser)")
+                } catch (e: Exception) {
+                    PatcherLog.error(e) { "Could not capture a parsed reel" }
+                }
+            }
+        }
+    }.onFailure { PatcherLog.error(it) { "Reel parser hook not set up" } }
 
     trayMethod.hookMethod {
         before { param ->
