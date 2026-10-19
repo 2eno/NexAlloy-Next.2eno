@@ -17,12 +17,12 @@ import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
-import io.github.nexalloy.`2eno`.instagram.userIdGetterMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 private const val PREFERENCES = "nexalloy_stealth_follow"
 private const val ACCOUNTS = "accounts"
@@ -86,26 +86,61 @@ val StealthFollow = patch(
 
     val reelClass = classLoader.loadClass("com.instagram.model.reels.ReelResponseItemIntf")
     val reelId = reelClass.getMethod("getId")
+    val userClass = classLoader.loadClass("com.instagram.user.model.User")
+
+    // The stored user id (pk) must equal a reel's id, since a user story's reel id is the owner's pk. The obfuscated
+    // User getter that returns the pk is learned at runtime by matching a parsed reel's id to the user it belongs to,
+    // so it needs no column hash or name; until then the heuristic (first all-digit String getter) is used.
+    val userStringGetters = userClass.methods
+        .filter { it.parameterCount == 0 && it.returnType == String::class.java }
+        .sortedBy { it.name }
+        .onEach { it.isAccessible = true }
+    val reelUserGetters = reelClass.methods
+        .filter { it.parameterCount == 0 && it.returnType.name.contains("User") }
+        .onEach { it.isAccessible = true }
+    fun isUserId(value: String?) = value != null && value.length in 1..20 && value.all { it.isDigit() }
+    val pkGetter = AtomicReference<Method>()
+    fun calibratePk(reel: Any) {
+        if (pkGetter.get() != null) return
+        val rid = runCatching { reelId.invoke(reel) as? String }.getOrNull()?.takeIf(::isUserId) ?: return
+        for (userGetter in reelUserGetters) {
+            val user = runCatching { userGetter.invoke(reel) }.getOrNull()?.takeIf(userClass::isInstance) ?: continue
+            for (getter in userStringGetters) {
+                if (runCatching { getter.invoke(user) as? String }.getOrNull() == rid) {
+                    pkGetter.set(getter)
+                    log("calibrated pk getter: ${getter.name}")
+                    return
+                }
+            }
+        }
+    }
+    fun userIdOf(user: Any): String? {
+        fun read(getter: Method) = runCatching { getter.invoke(user) as? String }.getOrNull()
+        pkGetter.get()?.let { read(it).takeIf(::isUserId)?.let { v -> return v } }
+        for (getter in userStringGetters) read(getter).takeIf(::isUserId)?.let { return it }
+        return null
+    }
 
     // The story tray. This static method receives the reels Instagram parsed from one of its own authenticated
-    // responses (the reel list is one of its arguments). When Instagram loads a stealth followed account's story
-    // (opening the profile triggers that fetch), its reel passes through here and is captured; the captured reels are
-    // then injected into later tray updates, so the story shows in the tray. Nothing is fetched by the patch: on
-    // current Instagram the login token is added in a native layer the patch cannot read.
+    // responses (the reel list is one of its arguments). Stealth accounts' reels, captured below, are injected into
+    // later tray updates so the story shows in the tray. Nothing is fetched by the patch: on current Instagram the
+    // login token is added in a native layer the patch cannot read.
     val trayMethod = ::reelStoreAddTrayReelsMethod.method
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     val capturedReels = ConcurrentHashMap<String, Any>()
 
-    // Capture: Instagram parses every reel through this parser, including a profile's story it fetches with its own
-    // authenticated request when the profile is opened. A stealth account's parsed reel (a ReelResponseItem, the same
-    // type the tray holds) is kept here so the tray hook can inject it, since a non-followed account's story never
-    // reaches the tray method itself.
+    // Capture: Instagram parses reels through this parser. Each parsed reel calibrates the pk getter and, for a
+    // stealth account, is kept for the tray hook to inject. The reel ids seen are logged (capped) so a logcat shows
+    // whether a profile's story reaches this parser at all.
+    val parserSeen = ConcurrentHashMap.newKeySet<String>()
     runCatching {
         ::reelResponseParserMethod.method.hookMethod {
             after { param ->
                 try {
                     val reel = param.result?.takeIf(reelClass::isInstance) ?: return@after
+                    calibratePk(reel)
                     val id = runCatching { reelId.invoke(reel) as? String }.getOrNull() ?: return@after
+                    if (parserSeen.size < 80 && parserSeen.add(id)) log("parser reel $id")
                     if (id in accounts.ids() && capturedReels.put(id, reel) == null) log("captured stealth reel $id (parser)")
                 } catch (e: Exception) {
                     PatcherLog.error(e) { "Could not capture a parsed reel" }
@@ -145,34 +180,8 @@ val StealthFollow = patch(
     // a failure here still leaves the story tray injection working.
     runCatching {
     val profileClass = classLoader.loadClass("com.instagram.profile.fragment.UserDetailFragment")
-    val userClass = classLoader.loadClass("com.instagram.user.model.User")
     val profileUser = profileClass.declaredMethods.first { it.parameterCount == 0 && it.returnType == userClass }
         .apply { isAccessible = true }
-
-    // The pk getters of User, found by the hash of their id column. The reliable source of the numeric user id;
-    // empty when the fingerprint matched nothing on this build, where the heuristic below is the only source.
-    val pkGetters = runCatching {
-        ::userIdGetterMethods.dexMethodList.filter { it.isMethod }.map { it.toMethod().apply { isAccessible = true } }
-    }.onFailure { PatcherLog.error(it) { "User id getters not found" } }.getOrNull().orEmpty()
-    log("pk getters: ${pkGetters.size}")
-
-    // The id getters of User are obfuscated and change between versions, so as a fallback the user id is read as the
-    // value of a no-argument String getter that is all digits, which the numeric user id (pk) is. Sorted by name so
-    // the order is stable across runs.
-    val userIdGetters = userClass.methods
-        .filter { it.parameterCount == 0 && it.returnType == String::class.java }
-        .sortedBy { it.name }
-        .onEach { it.isAccessible = true }
-    fun isUserId(value: String?) = value != null && value.length in 1..20 && value.all { it.isDigit() }
-    // Resolved per user and re-validated every time, never cached across users: a getter that reads the pk for one
-    // account can be unset or a different numeric field for another, which showed the wrong follow state on the
-    // button and hid it on some profiles.
-    fun userIdOf(user: Any): String? {
-        fun read(getter: Method) = runCatching { getter.invoke(user) as? String }.getOrNull()
-        for (getter in pkGetters) read(getter).takeIf(::isUserId)?.let { return it }
-        for (getter in userIdGetters) read(getter).takeIf(::isUserId)?.let { return it }
-        return null
-    }
 
     // Whether the viewer already follows a user normally, read from the "following" entry of the friendship status
     // map. The button is hidden for such users, since their stories already come through the normal follow.
