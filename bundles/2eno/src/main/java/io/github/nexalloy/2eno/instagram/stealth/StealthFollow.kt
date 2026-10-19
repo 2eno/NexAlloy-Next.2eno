@@ -22,7 +22,6 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicReference
 
 private const val PREFERENCES = "nexalloy_stealth_follow"
 private const val ACCOUNTS = "accounts"
@@ -87,78 +86,36 @@ val StealthFollow = patch(
     val reelClass = classLoader.loadClass("com.instagram.model.reels.ReelResponseItemIntf")
     val reelId = reelClass.getMethod("getId")
 
-    // The story tray. The stories of the stealth followed accounts are read from Instagram's own reel store, where
-    // they land after Instagram fetches them with its own authenticated request (opening the profile triggers that),
-    // and injected at the front of the tray unless it already has them. Nothing is fetched by the patch: on current
-    // Instagram the login token is added in a native layer the patch cannot read, so it cannot make the request
-    // itself.
+    // The story tray. This static method receives the reels Instagram parsed from one of its own authenticated
+    // responses (the reel list is one of its arguments). When Instagram loads a stealth followed account's story
+    // (opening the profile triggers that fetch), its reel passes through here and is captured; the captured reels are
+    // then injected into later tray updates, so the story shows in the tray. Nothing is fetched by the patch: on
+    // current Instagram the login token is added in a native layer the patch cannot read.
     val trayMethod = ::reelStoreAddTrayReelsMethod.method
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
-
-    // The method is static, so the reel store is one of its arguments. Its get-reel-by-id methods (one String
-    // parameter, a reel return type) are collected per class; the right one is found at runtime by whichever returns
-    // the reel whose id matches, so the obfuscated name does not matter.
-    val reelGettersByClass = ConcurrentHashMap<Class<*>, List<Method>>()
-    fun reelGetters(clazz: Class<*>) = reelGettersByClass.getOrPut(clazz) {
-        clazz.methods.filter { method ->
-            method.parameterCount == 1 && method.parameterTypes[0] == String::class.java && (
-                reelClass.isAssignableFrom(method.returnType) ||
-                    method.returnType.isAssignableFrom(reelClass) ||
-                    method.returnType.name.contains("Reel")
-                )
-        }.onEach { it.isAccessible = true }
-    }
-    // The reel store among the arguments: the one whose class is the reel store, or which can look up a reel by id.
-    fun findStore(args: Array<Any?>) = args.firstOrNull { arg ->
-        arg != null && (arg.javaClass.name.contains("ReelStore") || reelGetters(arg.javaClass).isNotEmpty())
-    }
-    val reelByIdMethod = AtomicReference<Method>()
-    var storeProbed = false
-
-    fun storeReel(store: Any, id: String): Any? {
-        fun valid(reel: Any?) =
-            reel?.takeIf { reelClass.isInstance(it) && runCatching { reelId.invoke(it) as? String }.getOrNull() == id }
-        reelByIdMethod.get()?.let { return valid(runCatching { it.invoke(store, id) }.getOrNull()) }
-        for (method in reelGetters(store.javaClass)) {
-            val reel = valid(runCatching { method.invoke(store, id) }.getOrNull())
-            if (reel != null) {
-                reelByIdMethod.set(method)
-                log("reel-by-id store method: ${store.javaClass.simpleName}.${method.name}")
-                return reel
-            }
-        }
-        return null
-    }
+    val capturedReels = ConcurrentHashMap<String, Any>()
 
     trayMethod.hookMethod {
         before { param ->
             try {
                 val ids = accounts.ids()
                 if (ids.isEmpty() || trayIndex < 0) return@before
-                val tray = param.args.getOrNull(trayIndex) as? List<*> ?: return@before
-                val store = findStore(param.args)
-                // One-time dump of the arguments and store, so a logcat shows where the reel store is and what a
-                // stealth id resolves to (and its type) once the account's profile has been opened.
-                if (!storeProbed) {
-                    storeProbed = true
-                    log("tray args: " + param.args.mapIndexed { i, a -> "$i=${a?.javaClass?.name}" }.joinToString())
-                    log("store=${store?.javaClass?.name}; tray item=${tray.firstOrNull()?.javaClass?.name}")
-                    if (store != null) ids.firstOrNull()?.let { probeId ->
-                        reelGetters(store.javaClass).forEach { method ->
-                            val result = runCatching { method.invoke(store, probeId) }.getOrNull()
-                            if (result != null) log("probe ${method.name}($probeId) -> ${result.javaClass.name}")
-                        }
-                    }
+                val reels = param.args.getOrNull(trayIndex) as? List<*> ?: return@before
+                fun idOf(reel: Any?) =
+                    reel?.takeIf(reelClass::isInstance)?.let { runCatching { reelId.invoke(it) as? String }.getOrNull() }
+                val presentIds = reels.mapNotNull(::idOf)
+                // Capture the reels of stealth accounts that Instagram itself loaded and passed through here.
+                reels.forEach { reel ->
+                    val id = idOf(reel) ?: return@forEach
+                    if (id in ids && reel != null && capturedReels.put(id, reel) == null) log("captured stealth reel $id")
                 }
-                if (store == null) return@before
-                val trayIds = tray.mapNotNull { reel ->
-                    reel?.takeIf(reelClass::isInstance)?.let { reelId.invoke(it) as? String }
-                }.toSet()
-                val added = ids.filter { it !in trayIds }.mapNotNull { id -> storeReel(store, id) }
-                if (added.isEmpty()) return@before
+                log("maybeAdd: ${presentIds.size} reels ${presentIds.take(8)}; cached ${capturedReels.keys}")
+                // Inject captured stealth reels that are followed and not already in this list.
+                val missing = ids.mapNotNull { id -> capturedReels[id]?.takeIf { id !in presentIds } }
+                if (missing.isEmpty()) return@before
                 @Suppress("UNCHECKED_CAST")
-                param.args[trayIndex] = added + (tray as List<Any?>)
-                log("added ${added.size} stealth reels to the tray from the store")
+                param.args[trayIndex] = missing + (reels as List<Any?>)
+                log("injected ${missing.size} stealth reels into the tray")
             } catch (e: Exception) {
                 PatcherLog.error(e) { "Could not add the stealth followed stories" }
             }
