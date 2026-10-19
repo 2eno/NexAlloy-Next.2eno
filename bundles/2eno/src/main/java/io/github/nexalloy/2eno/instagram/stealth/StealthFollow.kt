@@ -146,30 +146,58 @@ val StealthFollow = patch(
     }
     log("stub setup: parsers=${jsonParsers.size}, parser=${reelParser != null}")
     val stubReels = ConcurrentHashMap<String, Any>()
+    // Static helpers on the parser's class that parse a reel straight from a JSON string, if Instagram has one.
+    val stringParsers = reelParserMethod?.declaringClass?.declaredMethods.orEmpty().filter {
+        it.parameterTypes.contentEquals(arrayOf(String::class.java)) && reelClass.isAssignableFrom(it.returnType)
+    }.onEach { it.isAccessible = true }
+    val stubFailed = ConcurrentHashMap.newKeySet<String>()
     fun stubReel(id: String): Any? {
-        if (reelParserMethod == null || reelParser == null || jsonParsers.isEmpty()) return null
+        if (reelParserMethod == null || id == "0") return null
         stubReels[id]?.let { return it }
+        if (id in stubFailed) return null
         val now = System.currentTimeMillis() / 1000
         val json = """{"id":"$id","latest_reel_media":${now - 600},"expiring_at":${now + 72000},"seen":0,""" +
             """"ranked_position":0,"seen_ranked_position":0,"muted":false,"prefetch_count":0,"media_count":1,""" +
             """"media_ids":[],"reel_type":"user_reel","user":{"pk":"$id","pk_id":"$id","id":"$id","username":"",""" +
             """"full_name":"","is_private":false,"profile_pic_url":""},"items":[]}"""
-        for (factory in jsonParsers) {
-            val reel = runCatching {
-                buildingStub.set(true)
-                try {
-                    reelParserMethod.invoke(reelParser, factory.invoke(null, json))
-                } finally {
-                    buildingStub.set(false)
+        // The ways to parse the stub, tried in turn: a parse-from-string helper; a fresh parser advanced to its first
+        // token (as Instagram's own parseFromJson(String) does before unsafeParseFromJson), trying each no-argument
+        // token method since the name of nextToken is obfuscated; and the parser as created.
+        val attempts = buildList<() -> Any?> {
+            stringParsers.forEach { method -> add { method.invoke(reelParser, json) } }
+            jsonParsers.forEach { factory ->
+                val tokenMethods = runCatching { factory.returnType.methods.toList() }.getOrDefault(emptyList())
+                    .filter { it.parameterCount == 0 && it.returnType.isEnum }
+                tokenMethods.forEach { advance ->
+                    add {
+                        val parser = factory.invoke(null, json)
+                        advance.invoke(parser)
+                        reelParserMethod.invoke(reelParser, parser)
+                    }
                 }
-            }.getOrNull()
+                add { reelParserMethod.invoke(reelParser, factory.invoke(null, json)) }
+            }
+        }
+        var failure: Throwable? = null
+        for (attempt in attempts) {
+            buildingStub.set(true)
+            val reel = try {
+                attempt()
+            } catch (e: Throwable) {
+                failure = e
+                null
+            } finally {
+                buildingStub.set(false)
+            }
             if (reel != null && reelClass.isInstance(reel)) {
                 stubReels[id] = reel
                 log("built stub reel $id")
                 return reel
             }
         }
-        log("could not build stub reel $id")
+        stubFailed.add(id)
+        val cause = generateSequence(failure) { it.cause }.lastOrNull()
+        log("could not build stub reel $id (${attempts.size} attempts): $cause")
         return null
     }
 
