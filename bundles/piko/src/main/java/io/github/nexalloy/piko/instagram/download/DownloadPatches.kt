@@ -671,27 +671,47 @@ val DownloadMedia = patch(
             return bestUrl
         }
 
+        val pictureId = appContext.resources.getIdentifier("expanded_profile_pic", "id", appContext.packageName)
+
+        fun downloadPicture(view: View) {
+            try {
+                val activity = activityIn(view)
+                val url = pictureUrl()
+                when {
+                    activity == null -> log("no activity for the profile picture")
+                    url == null -> toast(activity, "No profile picture found")
+                    else -> enqueue(activity, listOf(MediaExtractor.Item(url, false, url)))
+                }
+            } catch (e: Exception) {
+                log("profile picture failed: ${e.stackTraceToString().take(1500)}")
+                toast(view.context, "Download failed")
+            }
+        }
+
+        // Long pressing the expanded profile picture downloads it, so the row of buttons below it (Follow, Share
+        // profile, Copy link, QR code and Stealth) is not crowded further. A "Download" button is added to the row
+        // only if the picture view cannot be found.
         ::profilePictureActionsMethod.hookMethod {
             before { param ->
                 val bar = param.args[0] as? View ?: return@before
                 val actions = param.args[2] as? List<*> ?: return@before
                 try {
+                    val picture = pictureId.takeIf { it != 0 }?.let { bar.rootView.findViewById<View>(it) }
+                    if (picture != null) {
+                        picture.setOnLongClickListener { view ->
+                            log("long pressed the profile picture")
+                            toast(view.context, "Downloading profile picture")
+                            downloadPicture(view)
+                            true
+                        }
+                        log("download on long press of the profile picture")
+                        return@before
+                    }
                     val onClick = Proxy.newProxyInstance(classLoader, arrayOf(function0)) { proxy, method, args ->
                         when (method.name) {
                             "invoke" -> {
                                 log("tapped below the profile picture")
-                                try {
-                                    val activity = activityIn(bar)
-                                    val url = pictureUrl()
-                                    when {
-                                        activity == null -> log("no activity for the profile picture")
-                                        url == null -> toast(activity, "No profile picture found")
-                                        else -> enqueue(activity, listOf(MediaExtractor.Item(url, false, url)))
-                                    }
-                                } catch (e: Exception) {
-                                    log("profile picture failed: ${e.stackTraceToString().take(1500)}")
-                                    toast(bar.context, "Download failed")
-                                }
+                                downloadPicture(bar)
                                 Unit
                             }
                             "equals" -> proxy === args?.firstOrNull()
@@ -703,7 +723,7 @@ val DownloadMedia = patch(
                     param.args[2] = actions + download
                     log("added below the profile picture")
                 } catch (e: Exception) {
-                    PatcherLog.error(e) { "Could not add the download button below the profile picture" }
+                    PatcherLog.error(e) { "Could not add the download option to the profile picture" }
                 }
             }
         }

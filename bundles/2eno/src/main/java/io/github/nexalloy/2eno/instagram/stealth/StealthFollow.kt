@@ -14,13 +14,14 @@ import io.github.nexalloy.hookMethod
 import io.github.nexalloy.patch
 import io.github.nexalloy.`2eno`.instagram.friendshipStatusMapMethod
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
-import io.github.nexalloy.`2eno`.instagram.jsonParserFromStringMethods
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import java.lang.ref.WeakReference
+import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -132,73 +133,60 @@ val StealthFollow = patch(
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     val capturedReels = ConcurrentHashMap<String, Any>()
 
-    // Placeholder (stub) reels: for a stealth account whose story has not been captured yet, a minimal reel built
-    // from just its id is injected into the tray so Instagram prefetches the media itself (with its own auth); the
-    // real reel then arrives through the parser and replaces the stub. buildingStub keeps the parser hook from
-    // treating the stub as a real capture.
-    val buildingStub = ThreadLocal.withInitial { false }
-    val jsonParsers = runCatching {
-        ::jsonParserFromStringMethods.dexMethodList.filter { it.isMethod }.map { it.toMethod().apply { isAccessible = true } }
-    }.getOrNull().orEmpty()
-    val reelParserMethod = runCatching { ::reelResponseParserMethod.method.apply { isAccessible = true } }.getOrNull()
-    val reelParser = reelParserMethod?.let { method ->
-        runCatching { method.declaringClass.getDeclaredConstructor().apply { isAccessible = true }.newInstance() }.getOrNull()
+    // Placeholder (stub) reels: for a stealth account whose story has not been captured yet, a copy of a real tray
+    // reel is made with its id rewritten to the account's and its story items cleared, and injected into the tray so
+    // Instagram prefetches that account's story itself (with its own auth); the real reel then arrives through the
+    // parser and replaces the stub. Instagram's reel parser cannot build a reel from plain JSON on this version, so
+    // the stub is copied from a reel Instagram built. It is used only if the copy really reports the new id and has
+    // no items left, and given up after a few tray updates so a placeholder never lingers.
+    val unsafe = runCatching {
+        Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe").apply { isAccessible = true }.get(null)
+    }.getOrNull()
+    val allocateInstance = unsafe?.javaClass?.getMethod("allocateInstance", Class::class.java)
+    val instanceFields = ConcurrentHashMap<Class<*>, List<Field>>()
+    fun fieldsOf(clazz: Class<*>) = instanceFields.getOrPut(clazz) {
+        generateSequence(clazz) { it.superclass }.takeWhile { it != Any::class.java }
+            .flatMap { it.declaredFields.asSequence() }.filter { !Modifier.isStatic(it.modifiers) }
+            .onEach { it.isAccessible = true }.toList()
     }
-    log("stub setup: parsers=${jsonParsers.size}, parser=${reelParser != null}")
     val stubReels = ConcurrentHashMap<String, Any>()
-    // Static helpers on the parser's class that parse a reel straight from a JSON string, if Instagram has one.
-    val stringParsers = reelParserMethod?.declaringClass?.declaredMethods.orEmpty().filter {
-        it.parameterTypes.contentEquals(arrayOf(String::class.java)) && reelClass.isAssignableFrom(it.returnType)
-    }.onEach { it.isAccessible = true }
-    val stubFailed = ConcurrentHashMap.newKeySet<String>()
-    fun stubReel(id: String): Any? {
-        if (reelParserMethod == null || id == "0") return null
+    val stubTries = ConcurrentHashMap<String, Int>()
+    val maxStubTries = 5
+    fun stubReel(id: String, template: Any): Any? {
+        if (allocateInstance == null || id == "0") return null
+        val tries = stubTries.merge(id, 1) { a, b -> a + b } ?: 1
+        if (tries > maxStubTries) {
+            if (tries == maxStubTries + 1) log("gave up on a stub for $id: Instagram did not fetch the story")
+            return null
+        }
         stubReels[id]?.let { return it }
-        if (id in stubFailed) return null
-        val now = System.currentTimeMillis() / 1000
-        val json = """{"id":"$id","latest_reel_media":${now - 600},"expiring_at":${now + 72000},"seen":0,""" +
-            """"ranked_position":0,"seen_ranked_position":0,"muted":false,"prefetch_count":0,"media_count":1,""" +
-            """"media_ids":[],"reel_type":"user_reel","user":{"pk":"$id","pk_id":"$id","id":"$id","username":"",""" +
-            """"full_name":"","is_private":false,"profile_pic_url":""},"items":[]}"""
-        // The ways to parse the stub, tried in turn: a parse-from-string helper; a fresh parser advanced to its first
-        // token (as Instagram's own parseFromJson(String) does before unsafeParseFromJson), trying each no-argument
-        // token method since the name of nextToken is obfuscated; and the parser as created.
-        val attempts = buildList<() -> Any?> {
-            stringParsers.forEach { method -> add { method.invoke(reelParser, json) } }
-            jsonParsers.forEach { factory ->
-                val tokenMethods = runCatching { factory.returnType.methods.toList() }.getOrDefault(emptyList())
-                    .filter { it.parameterCount == 0 && it.returnType.isEnum }
-                tokenMethods.forEach { advance ->
-                    add {
-                        val parser = factory.invoke(null, json)
-                        advance.invoke(parser)
-                        reelParserMethod.invoke(reelParser, parser)
-                    }
-                }
-                add { reelParserMethod.invoke(reelParser, factory.invoke(null, json)) }
+        val templateId = runCatching { reelId.invoke(template) as? String }.getOrNull() ?: return null
+        return try {
+            val copy = allocateInstance.invoke(unsafe, template.javaClass)!!
+            for (field in fieldsOf(template.javaClass)) {
+                val value = field.get(template)
+                field.set(
+                    copy,
+                    when {
+                        value is String && value == templateId -> id
+                        // The template's story items must not show under the stealth account.
+                        value is List<*> && value.isNotEmpty() ->
+                            if (field.type.isAssignableFrom(ArrayList::class.java)) ArrayList<Any?>()
+                            else throw IllegalStateException("cannot clear ${field.type.name} ${field.name}")
+                        else -> value
+                    },
+                )
             }
+            val copyId = runCatching { reelId.invoke(copy) as? String }.getOrNull()
+            if (copyId != id) throw IllegalStateException("copy reports id $copyId")
+            stubReels[id] = copy
+            log("built stub reel $id from $templateId")
+            copy
+        } catch (e: Exception) {
+            stubTries[id] = maxStubTries + 1
+            log("could not build stub reel $id: $e")
+            null
         }
-        var failure: Throwable? = null
-        for (attempt in attempts) {
-            buildingStub.set(true)
-            val reel = try {
-                attempt()
-            } catch (e: Throwable) {
-                failure = e
-                null
-            } finally {
-                buildingStub.set(false)
-            }
-            if (reel != null && reelClass.isInstance(reel)) {
-                stubReels[id] = reel
-                log("built stub reel $id")
-                return reel
-            }
-        }
-        stubFailed.add(id)
-        val cause = generateSequence(failure) { it.cause }.lastOrNull()
-        log("could not build stub reel $id (${attempts.size} attempts): $cause")
-        return null
     }
 
     // Capture: Instagram parses reels through this parser, including a profile's story it fetches with its own
@@ -208,7 +196,6 @@ val StealthFollow = patch(
     runCatching {
         ::reelResponseParserMethod.method.hookMethod {
             after { param ->
-                if (buildingStub.get()) return@after
                 try {
                     val reel = param.result?.takeIf(reelClass::isInstance) ?: return@after
                     calibratePk(reel)
@@ -237,7 +224,10 @@ val StealthFollow = patch(
                 }
                 // Inject each followed stealth account not already in this list: the captured real reel if we have
                 // it, otherwise a stub so Instagram prefetches the story itself and the real reel arrives later.
-                val missing = ids.filter { it !in presentIds }.mapNotNull { id -> capturedReels[id] ?: stubReel(id) }
+                val template = reels.firstOrNull { idOf(it)?.all(Char::isDigit) == true }
+                val missing = ids.filter { it !in presentIds }.mapNotNull { id ->
+                    capturedReels[id] ?: template?.let { stubReel(id, it) }
+                }
                 if (missing.isEmpty()) return@before
                 @Suppress("UNCHECKED_CAST")
                 param.args[trayIndex] = missing + (reels as List<Any?>)
