@@ -14,6 +14,7 @@ import io.github.nexalloy.hookMethod
 import io.github.nexalloy.patch
 import io.github.nexalloy.`2eno`.instagram.friendshipStatusMapMethod
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
+import io.github.nexalloy.`2eno`.instagram.jsonParserFromStringMethods
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
@@ -131,6 +132,47 @@ val StealthFollow = patch(
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     val capturedReels = ConcurrentHashMap<String, Any>()
 
+    // Placeholder (stub) reels: for a stealth account whose story has not been captured yet, a minimal reel built
+    // from just its id is injected into the tray so Instagram prefetches the media itself (with its own auth); the
+    // real reel then arrives through the parser and replaces the stub. buildingStub keeps the parser hook from
+    // treating the stub as a real capture.
+    val buildingStub = ThreadLocal.withInitial { false }
+    val jsonParsers = runCatching {
+        ::jsonParserFromStringMethods.dexMethodList.filter { it.isMethod }.map { it.toMethod().apply { isAccessible = true } }
+    }.getOrNull().orEmpty()
+    val reelParserMethod = runCatching { ::reelResponseParserMethod.method.apply { isAccessible = true } }.getOrNull()
+    val reelParser = reelParserMethod?.let { method ->
+        runCatching { method.declaringClass.getDeclaredConstructor().apply { isAccessible = true }.newInstance() }.getOrNull()
+    }
+    log("stub setup: parsers=${jsonParsers.size}, parser=${reelParser != null}")
+    val stubReels = ConcurrentHashMap<String, Any>()
+    fun stubReel(id: String): Any? {
+        if (reelParserMethod == null || reelParser == null || jsonParsers.isEmpty()) return null
+        stubReels[id]?.let { return it }
+        val now = System.currentTimeMillis() / 1000
+        val json = """{"id":"$id","latest_reel_media":${now - 600},"expiring_at":${now + 72000},"seen":0,""" +
+            """"ranked_position":0,"seen_ranked_position":0,"muted":false,"prefetch_count":0,"media_count":1,""" +
+            """"media_ids":[],"reel_type":"user_reel","user":{"pk":"$id","pk_id":"$id","id":"$id","username":"",""" +
+            """"full_name":"","is_private":false,"profile_pic_url":""},"items":[]}"""
+        for (factory in jsonParsers) {
+            val reel = runCatching {
+                buildingStub.set(true)
+                try {
+                    reelParserMethod.invoke(reelParser, factory.invoke(null, json))
+                } finally {
+                    buildingStub.set(false)
+                }
+            }.getOrNull()
+            if (reel != null && reelClass.isInstance(reel)) {
+                stubReels[id] = reel
+                log("built stub reel $id")
+                return reel
+            }
+        }
+        log("could not build stub reel $id")
+        return null
+    }
+
     // Capture: Instagram parses reels through this parser, including a profile's story it fetches with its own
     // authenticated request when the profile is opened. Each parsed reel calibrates the pk getter, and a stealth
     // account's reel (a ReelResponseItem, the type the tray holds) is kept for the tray hook to inject, since a
@@ -138,6 +180,7 @@ val StealthFollow = patch(
     runCatching {
         ::reelResponseParserMethod.method.hookMethod {
             after { param ->
+                if (buildingStub.get()) return@after
                 try {
                     val reel = param.result?.takeIf(reelClass::isInstance) ?: return@after
                     calibratePk(reel)
@@ -164,8 +207,9 @@ val StealthFollow = patch(
                     val id = idOf(reel) ?: return@forEach
                     if (id in ids && reel != null && capturedReels.put(id, reel) == null) log("captured stealth reel $id")
                 }
-                // Inject captured stealth reels that are followed and not already in this list.
-                val missing = ids.mapNotNull { id -> capturedReels[id]?.takeIf { id !in presentIds } }
+                // Inject each followed stealth account not already in this list: the captured real reel if we have
+                // it, otherwise a stub so Instagram prefetches the story itself and the real reel arrives later.
+                val missing = ids.filter { it !in presentIds }.mapNotNull { id -> capturedReels[id] ?: stubReel(id) }
                 if (missing.isEmpty()) return@before
                 @Suppress("UNCHECKED_CAST")
                 param.args[trayIndex] = missing + (reels as List<Any?>)
