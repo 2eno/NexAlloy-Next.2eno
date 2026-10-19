@@ -21,6 +21,7 @@ import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
 private const val PREFERENCES = "nexalloy_stealth_follow"
@@ -93,16 +94,24 @@ val StealthFollow = patch(
     // itself.
     val trayMethod = ::reelStoreAddTrayReelsMethod.method
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
-    val reelStoreClass = trayMethod.declaringClass
-    // Methods of the reel store that look up a reel by its id (one String parameter, a reel return type). The right
-    // one is found at runtime by whichever returns the reel whose id matches, so the obfuscated name does not matter.
-    val reelByIdCandidates = reelStoreClass.methods.filter { method ->
-        method.parameterCount == 1 && method.parameterTypes[0] == String::class.java && (
-            reelClass.isAssignableFrom(method.returnType) ||
-                method.returnType.isAssignableFrom(reelClass) ||
-                method.returnType.name.contains("Reel")
-            )
-    }.onEach { it.isAccessible = true }
+
+    // The method is static, so the reel store is one of its arguments. Its get-reel-by-id methods (one String
+    // parameter, a reel return type) are collected per class; the right one is found at runtime by whichever returns
+    // the reel whose id matches, so the obfuscated name does not matter.
+    val reelGettersByClass = ConcurrentHashMap<Class<*>, List<Method>>()
+    fun reelGetters(clazz: Class<*>) = reelGettersByClass.getOrPut(clazz) {
+        clazz.methods.filter { method ->
+            method.parameterCount == 1 && method.parameterTypes[0] == String::class.java && (
+                reelClass.isAssignableFrom(method.returnType) ||
+                    method.returnType.isAssignableFrom(reelClass) ||
+                    method.returnType.name.contains("Reel")
+                )
+        }.onEach { it.isAccessible = true }
+    }
+    // The reel store among the arguments: the one whose class is the reel store, or which can look up a reel by id.
+    fun findStore(args: Array<Any?>) = args.firstOrNull { arg ->
+        arg != null && (arg.javaClass.name.contains("ReelStore") || reelGetters(arg.javaClass).isNotEmpty())
+    }
     val reelByIdMethod = AtomicReference<Method>()
     var storeProbed = false
 
@@ -110,11 +119,11 @@ val StealthFollow = patch(
         fun valid(reel: Any?) =
             reel?.takeIf { reelClass.isInstance(it) && runCatching { reelId.invoke(it) as? String }.getOrNull() == id }
         reelByIdMethod.get()?.let { return valid(runCatching { it.invoke(store, id) }.getOrNull()) }
-        for (method in reelByIdCandidates) {
+        for (method in reelGetters(store.javaClass)) {
             val reel = valid(runCatching { method.invoke(store, id) }.getOrNull())
             if (reel != null) {
                 reelByIdMethod.set(method)
-                log("reel-by-id store method: ${method.name}")
+                log("reel-by-id store method: ${store.javaClass.simpleName}.${method.name}")
                 return reel
             }
         }
@@ -125,27 +134,26 @@ val StealthFollow = patch(
         before { param ->
             try {
                 val ids = accounts.ids()
-                // Logged on every tray update so a logcat confirms the hook fires and with how many stealth ids.
-                log("tray hook: ${ids.size} ids, trayIndex=$trayIndex, this=${param.thisObject?.javaClass?.name}")
                 if (ids.isEmpty() || trayIndex < 0) return@before
-                val store = param.thisObject ?: return@before
                 val tray = param.args.getOrNull(trayIndex) as? List<*> ?: return@before
-                val trayIds = tray.mapNotNull { reel ->
-                    reel?.takeIf(reelClass::isInstance)?.let { reelId.invoke(it) as? String }
-                }.toSet()
-                // One-time probe of the store, so a logcat shows what a stealth id resolves to (and its type) when
-                // the account's profile has been opened, even if the injection below finds nothing.
+                val store = findStore(param.args)
+                // One-time dump of the arguments and store, so a logcat shows where the reel store is and what a
+                // stealth id resolves to (and its type) once the account's profile has been opened.
                 if (!storeProbed) {
                     storeProbed = true
-                    log("reel store ${reelStoreClass.name}; tray item ${tray.firstOrNull()?.javaClass?.name}; " +
-                        "${reelByIdCandidates.size} id getters")
-                    ids.firstOrNull()?.let { probeId ->
-                        reelByIdCandidates.forEach { method ->
+                    log("tray args: " + param.args.mapIndexed { i, a -> "$i=${a?.javaClass?.name}" }.joinToString())
+                    log("store=${store?.javaClass?.name}; tray item=${tray.firstOrNull()?.javaClass?.name}")
+                    if (store != null) ids.firstOrNull()?.let { probeId ->
+                        reelGetters(store.javaClass).forEach { method ->
                             val result = runCatching { method.invoke(store, probeId) }.getOrNull()
                             if (result != null) log("probe ${method.name}($probeId) -> ${result.javaClass.name}")
                         }
                     }
                 }
+                if (store == null) return@before
+                val trayIds = tray.mapNotNull { reel ->
+                    reel?.takeIf(reelClass::isInstance)?.let { reelId.invoke(it) as? String }
+                }.toSet()
                 val added = ids.filter { it !in trayIds }.mapNotNull { id -> storeReel(store, id) }
                 if (added.isEmpty()) return@before
                 @Suppress("UNCHECKED_CAST")
