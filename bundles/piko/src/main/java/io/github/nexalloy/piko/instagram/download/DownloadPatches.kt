@@ -637,18 +637,38 @@ val DownloadMedia = patch(
             before { param -> if (resumedProfile.get() === param.thisObject) resumedProfile = WeakReference(null) }
         }
 
+        val imageUrlGetWidth = runCatching { imageUrlClass.getMethod("getWidth") }.getOrNull()
+        val sizeInUrl = Regex("/s(\\d+)x\\d+/")
+        // The pixel size of an ImageUrl: its width, or the size encoded in the CDN path (e.g. /s320x320/) when the
+        // width getter is unavailable, so the largest profile picture variant can be picked.
+        fun sizeOf(image: Any, url: String): Int {
+            val width = imageUrlGetWidth?.let { runCatching { it.invoke(image) as? Int }.getOrNull() } ?: 0
+            val fromUrl = sizeInUrl.find(url)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            return maxOf(width, fromUrl)
+        }
+
         /**
-         * The URL of the profile picture of the profile on screen.
+         * The URL of the highest-resolution profile picture of the profile on screen. The User exposes several
+         * ImageUrl getters (a small thumbnail and larger/HD variants); the widest is chosen so the download is not
+         * low quality.
          */
         fun pictureUrl(): String? {
             val user = resumedProfile.get()?.let { profileUser.invoke(it) }
                 ?: return null.also { log("no profile user") }
+            var bestUrl: String? = null
+            var bestSize = -1
             for (getter in pictureGetters) {
                 val image = runCatching { getter.invoke(user) }.getOrNull() ?: continue
                 val url = runCatching { imageUrlGetUrl.invoke(image) as? String }.getOrNull()
-                if (!url.isNullOrEmpty()) return url
+                if (url.isNullOrEmpty()) continue
+                val size = sizeOf(image, url)
+                if (size > bestSize) {
+                    bestSize = size
+                    bestUrl = url
+                }
             }
-            return null.also { log("no profile picture url on the user") }
+            if (bestUrl == null) log("no profile picture url on the user")
+            return bestUrl
         }
 
         ::profilePictureActionsMethod.hookMethod {

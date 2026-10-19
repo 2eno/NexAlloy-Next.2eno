@@ -17,9 +17,12 @@ import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
+import io.github.nexalloy.`2eno`.instagram.tigonStartRequestMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import java.lang.ref.WeakReference
+import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -27,8 +30,10 @@ import java.util.concurrent.atomic.AtomicReference
 private const val PREFERENCES = "nexalloy_stealth_follow"
 private const val ACCOUNTS = "accounts"
 
-private const val FOLLOW_LABEL = "Stealth follow"
-private const val FOLLOW_UNFOLLOW_LABEL = "Stealth unfollow"
+// Single short words so the action row below the profile picture, which already has Follow, Share profile, Copy link
+// and QR code, is not crowded further; the eye icon shows whether the account is stealth followed.
+private const val FOLLOW_LABEL = "Stealth"
+private const val FOLLOW_UNFOLLOW_LABEL = "Unstealth"
 
 private fun log(message: String) = Log.i("NexAlloy", "Stealth follow: $message").let { }
 
@@ -148,6 +153,41 @@ val StealthFollow = patch(
             }
         }
     }.onFailure { PatcherLog.error(it) { "Reel parser hook not set up" } }
+
+    // Auto-fetch diagnostic: log the URLs of Instagram's own reel/story requests, to find one that can be nudged into
+    // fetching stealth accounts' stories without opening their profile. Read-only; isolated so it cannot break the
+    // capture or injection.
+    runCatching {
+        val urlFields = ConcurrentHashMap<Class<*>, List<Field>>()
+        fun fields(clazz: Class<*>) = urlFields.getOrPut(clazz) {
+            generateSequence(clazz) { it.superclass }.takeWhile { it != Any::class.java }
+                .flatMap { it.declaredFields.asSequence() }.filter { !Modifier.isStatic(it.modifiers) }
+                .onEach { it.isAccessible = true }.toList()
+        }
+        val seenRequests = ConcurrentHashMap.newKeySet<String>()
+        ::tigonStartRequestMethods.dexMethodList.forEach { method ->
+            method.hookMethod {
+                before { param ->
+                    try {
+                        for (arg in param.args) {
+                            arg ?: continue
+                            for (field in fields(arg.javaClass)) {
+                                val value = runCatching { field.get(arg) }.getOrNull() ?: continue
+                                if (value !is java.net.URI && value !is java.net.URL && value !is CharSequence) continue
+                                val url = value.toString()
+                                if (!url.startsWith("http")) continue
+                                if (("/story" in url || "reels_media" in url || "reels_tray" in url) &&
+                                    seenRequests.add(url.substringBefore('?'))
+                                ) log("req ${url.take(200)}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Diagnostic only.
+                    }
+                }
+            }
+        }
+    }.onFailure { PatcherLog.error(it) { "URL diagnostic not set up" } }
 
     trayMethod.hookMethod {
         before { param ->
