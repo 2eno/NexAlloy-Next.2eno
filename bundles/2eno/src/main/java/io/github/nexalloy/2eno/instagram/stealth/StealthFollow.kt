@@ -17,12 +17,9 @@ import io.github.nexalloy.`2eno`.instagram.profilePictureActionConstructor
 import io.github.nexalloy.`2eno`.instagram.profilePictureActionsMethod
 import io.github.nexalloy.`2eno`.instagram.reelResponseParserMethod
 import io.github.nexalloy.`2eno`.instagram.reelStoreAddTrayReelsMethod
-import io.github.nexalloy.`2eno`.instagram.tigonStartRequestMethods
 import io.github.nexalloy.`2eno`.instagram.userIsPrivateMethod
 import java.lang.ref.WeakReference
-import java.lang.reflect.Field
 import java.lang.reflect.Method
-import java.lang.reflect.Modifier
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
@@ -134,10 +131,10 @@ val StealthFollow = patch(
     val trayIndex = trayMethod.parameterTypes.indexOfFirst { List::class.java.isAssignableFrom(it) }
     val capturedReels = ConcurrentHashMap<String, Any>()
 
-    // Capture: Instagram parses reels through this parser. Each parsed reel calibrates the pk getter and, for a
-    // stealth account, is kept for the tray hook to inject. The reel ids seen are logged (capped) so a logcat shows
-    // whether a profile's story reaches this parser at all.
-    val parserSeen = ConcurrentHashMap.newKeySet<String>()
+    // Capture: Instagram parses reels through this parser, including a profile's story it fetches with its own
+    // authenticated request when the profile is opened. Each parsed reel calibrates the pk getter, and a stealth
+    // account's reel (a ReelResponseItem, the type the tray holds) is kept for the tray hook to inject, since a
+    // non-followed account's story never reaches the tray method itself.
     runCatching {
         ::reelResponseParserMethod.method.hookMethod {
             after { param ->
@@ -145,49 +142,13 @@ val StealthFollow = patch(
                     val reel = param.result?.takeIf(reelClass::isInstance) ?: return@after
                     calibratePk(reel)
                     val id = runCatching { reelId.invoke(reel) as? String }.getOrNull() ?: return@after
-                    if (parserSeen.size < 80 && parserSeen.add(id)) log("parser reel $id")
-                    if (id in accounts.ids() && capturedReels.put(id, reel) == null) log("captured stealth reel $id (parser)")
+                    if (id in accounts.ids() && capturedReels.put(id, reel) == null) log("captured stealth reel $id")
                 } catch (e: Exception) {
                     PatcherLog.error(e) { "Could not capture a parsed reel" }
                 }
             }
         }
     }.onFailure { PatcherLog.error(it) { "Reel parser hook not set up" } }
-
-    // Auto-fetch diagnostic: log the URLs of Instagram's own reel/story requests, to find one that can be nudged into
-    // fetching stealth accounts' stories without opening their profile. Read-only; isolated so it cannot break the
-    // capture or injection.
-    runCatching {
-        val urlFields = ConcurrentHashMap<Class<*>, List<Field>>()
-        fun fields(clazz: Class<*>) = urlFields.getOrPut(clazz) {
-            generateSequence(clazz) { it.superclass }.takeWhile { it != Any::class.java }
-                .flatMap { it.declaredFields.asSequence() }.filter { !Modifier.isStatic(it.modifiers) }
-                .onEach { it.isAccessible = true }.toList()
-        }
-        val seenRequests = ConcurrentHashMap.newKeySet<String>()
-        ::tigonStartRequestMethods.dexMethodList.forEach { method ->
-            method.hookMethod {
-                before { param ->
-                    try {
-                        for (arg in param.args) {
-                            arg ?: continue
-                            for (field in fields(arg.javaClass)) {
-                                val value = runCatching { field.get(arg) }.getOrNull() ?: continue
-                                if (value !is java.net.URI && value !is java.net.URL && value !is CharSequence) continue
-                                val url = value.toString()
-                                if (!url.startsWith("http")) continue
-                                if (("/story" in url || "reels_media" in url || "reels_tray" in url) &&
-                                    seenRequests.add(url.substringBefore('?'))
-                                ) log("req ${url.take(200)}")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // Diagnostic only.
-                    }
-                }
-            }
-        }
-    }.onFailure { PatcherLog.error(it) { "URL diagnostic not set up" } }
 
     trayMethod.hookMethod {
         before { param ->
@@ -203,7 +164,6 @@ val StealthFollow = patch(
                     val id = idOf(reel) ?: return@forEach
                     if (id in ids && reel != null && capturedReels.put(id, reel) == null) log("captured stealth reel $id")
                 }
-                log("maybeAdd: ${presentIds.size} reels ${presentIds.take(8)}; cached ${capturedReels.keys}")
                 // Inject captured stealth reels that are followed and not already in this list.
                 val missing = ids.mapNotNull { id -> capturedReels[id]?.takeIf { id !in presentIds } }
                 if (missing.isEmpty()) return@before
