@@ -87,6 +87,12 @@ internal class MediaExtractor(
             val url = invoke(version, "getUrl") as? String ?: return@mapNotNull null
             Variant(url, get(videoWidthGetter, version) as? Int ?: 0, get(videoHeightGetter, version) as? Int ?: 0)
         }.distinctBy { it.url }
+            // Like Piko, the highest-resolution video first: by shortest side, then by pixels. Instagram does not
+            // always list the versions best first.
+            .sortedWith(
+                compareByDescending<Variant> { minOf(it.width, it.height) }
+                    .thenByDescending { it.width.toLong() * it.height },
+            )
 
         val imageInfo = get(imageInfoGetter, media)
             ?: mediaData(media).let { data ->
