@@ -7,8 +7,8 @@ android {
 
     defaultConfig {
         applicationId = "io.github.nexalloy.patches.piko"
-        versionCode = 14
-        versionName = "1.1.9"
+        versionCode = 15
+        versionName = "1.1.10"
     }
 }
 
