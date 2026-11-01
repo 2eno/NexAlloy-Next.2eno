@@ -385,18 +385,21 @@ val mediaCarouselGetter = findMethodDirect {
 }
 
 /**
- * Module names of the bottom sheets showing the menu of a post: the reels menu, also used for posts shown like
- * reels, and the simplified menu of the "≡" button of posts in the home feed.
+ * Module names of the bottom sheets showing the menu of a post: the reels menu of posts shown like reels, the menu
+ * of the reels viewer (scrolling through reels), and the simplified menu of the "≡" button of posts in the home
+ * feed.
  */
 internal val SHEET_MENU_MODULES = listOf(
     "ClipsOrganicMediaItemViewMoreOptionsController",
+    "ClipsOrganicMoreOptionsHelper",
     "SimplifiedMediaOverflowBottomSheet",
 )
 
 /**
- * The bottom sheet builder created right after a menu module name, like in Piko's reels menu hook.
+ * The class new-instanced right after a menu module name in [this]. The reels viewer menu also logs its module name
+ * before building an unrelated object, so this is only the sheet builder when it is [the common one][sheetBuilder].
  */
-private fun MethodData.sheetMenuBuilderClass(): ClassData? {
+private fun MethodData.builderAfterModule(): ClassData? {
     val instructions = instructions
     val moduleIndex = instructions.indexOfFirst { it.string in SHEET_MENU_MODULES }
     if (moduleIndex < 0) return null
@@ -404,18 +407,26 @@ private fun MethodData.sheetMenuBuilderClass(): ClassData? {
 }
 
 /**
+ * The bottom sheet builder, like in Piko's reels menu hook: the class built right after a menu module name in the
+ * most methods. Some methods log a module name before building something else, so the most common one is the sheet.
+ */
+private fun DexKitBridge.sheetBuilder(): ClassData =
+    SHEET_MENU_MODULES.flatMap { findMethodWithStrings(listOf(it)) }
+        .mapNotNull { it.builderAfterModule() }
+        .groupBy { it.name }.values.maxByOrNull { it.size }!!.first()
+
+/**
  * Show the bottom sheet menus of posts and reels. The home feed filters the options of its simplified menu to a few
  * allowed ones, so the download item is added to the sheet itself.
  */
 val sheetMenuMethods = findMethodListDirect {
+    val builder = sheetBuilder().name
     SHEET_MENU_MODULES.flatMap { module -> findMethodWithStrings(listOf(module)) }
-        .filter { it.sheetMenuBuilderClass() != null }
+        .filter { it.builderAfterModule()?.name == builder }
         .distinctBy { it.descriptor }
 }
 
-val sheetMenuBuilderClass = findClassDirect {
-    sheetMenuMethods().mapNotNull { it.sheetMenuBuilderClass() }.distinctBy { it.name }.single()
-}
+val sheetMenuBuilderClass = findClassDirect { sheetBuilder() }
 
 /**
  * The labels of the menu of other people's stories, built by the "ReelOptionsOverflowHelper". Like Piko, the
